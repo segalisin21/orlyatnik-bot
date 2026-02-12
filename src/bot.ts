@@ -144,12 +144,27 @@ export function createBot(): Bot {
     }
 
     if (p.status === STATUS.WAIT_PAYMENT || p.status === STATUS.PAYMENT_SENT) {
-      await ctx.reply('Чек пришли фото или документом — тогда смогу принять. Если уже отправил(а) — жди подтверждения.');
+      await ctx.reply(
+        'Чтобы подтвердить оплату, пришли чек (фото или документ) сюда в бота. Тогда смогу принять и передать менеджеру. Если уже отправил(а) — жди подтверждения.'
+      );
       return;
     }
 
     if (p.status === STATUS.CONFIRMED) {
       await ctx.reply(`Ты уже в списке! Чат: ${env.CHAT_INVITE_LINK || '—'}. Менеджер: @${env.MANAGER_TG_USERNAME}`);
+      return;
+    }
+
+    if (/оплатил|оплатила|перевёл|перевела|я перевёл|я перевела/i.test(text)) {
+      await ctx.reply(
+        'Чтобы подтвердить оплату, пришли чек (фото или документ) сюда в бота. Тогда смогу принять и передать менеджеру для подтверждения.'
+      );
+      return;
+    }
+
+    if (/покажи.*анкет|анкету покажи|мою анкет|покажи мою|где анкет/i.test(text) && (p.fio || p.city || p.phone)) {
+      const fullAnketa = formatAnketa(p);
+      await ctx.reply(`Вот твоя анкета:\n\n${fullAnketa}`);
       return;
     }
 
@@ -229,6 +244,31 @@ export function createBot(): Bot {
         const next = getNextEmptyField(p);
         await ctx.reply(out.reply_text + (next ? '\n\n' + FIELD_PROMPTS[next] : ''));
       }
+      return;
+    }
+
+    if (p.status === STATUS.WAIT_PAYMENT || p.status === STATUS.PAYMENT_SENT) {
+      await ctx.reply(
+        'Чтобы подтвердить оплату, пришли чек (фото или документ) сюда в бота. Тогда смогу принять и передать менеджеру.'
+      );
+      return;
+    }
+
+    if (p.status === STATUS.CONFIRMED) {
+      await ctx.reply(`Ты уже в списке! Чат: ${env.CHAT_INVITE_LINK || '—'}. Менеджер: @${env.MANAGER_TG_USERNAME}`);
+      return;
+    }
+
+    if (/оплатил|оплатила|перевёл|перевела|я перевёл|я перевела/i.test(text)) {
+      await ctx.reply(
+        'Чтобы подтвердить оплату, пришли чек (фото или документ) сюда в бота. Тогда смогу принять и передать менеджеру для подтверждения.'
+      );
+      return;
+    }
+
+    if (/покажи.*анкет|анкету покажи|мою анкет|покажи мою|где анкет/i.test(text) && (p.fio || p.city || p.phone)) {
+      const fullAnketa = formatAnketa(p);
+      await ctx.reply(`Вот твоя анкета:\n\n${fullAnketa}`);
       return;
     }
 
