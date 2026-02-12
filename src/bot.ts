@@ -31,6 +31,13 @@ const FIELD_PROMPTS: Record<FormField, string> = {
   shift: 'Какая смена? (если не знаешь — напиши «по умолчанию»)',
 };
 
+/** Фразы, по которым переключается статус. Бот должен явно их подсказывать. */
+const PHRASE_BOOK = /(хочу|готов|давай)\s*(забронировать|записаться|участвовать|ехать)|бронирую|записываюсь|записывай|готов\s*забронировать|готов\s*записаться/i;
+const PHRASE_CONFIRM_ANKETA = /^(да|подтверждаю|ок|окей|всё верно|все верно|верно|готово|да,?\s*верно|подтверждаю анкету)$/i;
+const PHRASE_HINT_BOOK = '👉 Чтобы начать заполнение анкеты, напиши: «Хочу забронировать» или «Готов забронировать»';
+const PHRASE_HINT_CONFIRM = '👉 Чтобы перейти к оплате, напиши: «Да» или «Подтверждаю»';
+const PHRASE_HINT_RECEIPT = '👉 Чтобы подтвердить оплату, пришли чек (фото или документ) сюда в бота';
+
 function normalizePhone(s: string): string {
   return s.replace(/[^\d+]/g, '');
 }
@@ -97,6 +104,14 @@ export function createBot(): Bot {
 
     const formStatuses: string[] = [STATUS.FORM_FILLING, STATUS.FORM_CONFIRM];
     if (formStatuses.includes(p.status)) {
+      if (p.status === STATUS.FORM_CONFIRM && PHRASE_CONFIRM_ANKETA.test(text)) {
+        await setParticipantStatus(userId, STATUS.WAIT_PAYMENT);
+        const again = formatAnketa(p);
+        await ctx.reply(
+          `Отлично! Реквизиты для задатка:\n\n${kb.PAYMENT_SBER}\n\nПовторяю анкету:\n${again}\n\n${kb.AFTER_PAYMENT_INSTRUCTION}\n\n${PHRASE_HINT_RECEIPT}`
+        );
+        return;
+      }
       const out = await getFormModeReply(text, p.status, p);
       const patch = out.form_patch || {};
       if (Object.keys(patch).length > 0) {
@@ -116,14 +131,14 @@ export function createBot(): Bot {
         await setParticipantStatus(userId, STATUS.FORM_CONFIRM);
         p = await getParticipant(userId, username, chatId);
         const fullAnketa = formatAnketa(p);
-        await ctx.reply(`Проверь анкету:\n\n${fullAnketa}\n\nВсё верно? Напиши «да» или «подтверждаю» — перейдём к оплате.`);
+        await ctx.reply(`Проверь анкету:\n\n${fullAnketa}\n\n${PHRASE_HINT_CONFIRM}`);
         await logOut(String(userId), STATUS.FORM_CONFIRM, 'OUT', 'text', 'anketa confirm');
         return;
       }
       if (isFormComplete(p)) {
         await setParticipantStatus(userId, STATUS.FORM_CONFIRM);
         const fullAnketa = formatAnketa(p);
-        await ctx.reply(out.reply_text + (out.reply_text.includes('анкет') ? '' : '\n\nТвоя анкета:\n' + fullAnketa + '\n\nВсё верно? Напиши «да» или «подтверждаю».'));
+        await ctx.reply(out.reply_text + (out.reply_text.includes('анкет') ? '' : '\n\nТвоя анкета:\n' + fullAnketa + '\n\n' + PHRASE_HINT_CONFIRM));
       } else {
         const next = getNextEmptyField(p);
         const prompt = next ? FIELD_PROMPTS[next] : '';
@@ -133,19 +148,9 @@ export function createBot(): Bot {
       return;
     }
 
-    if (p.status === STATUS.FORM_CONFIRM && /^(да|подтверждаю|ок|окей|всё верно|верно)$/i.test(text)) {
-      await setParticipantStatus(userId, STATUS.WAIT_PAYMENT);
-      const again = formatAnketa(p);
-      await ctx.reply(
-        `Отлично! Реквизиты для задатка:\n\n${kb.PAYMENT_SBER}\n\nПовторяю анкету:\n${again}\n\n${kb.AFTER_PAYMENT_INSTRUCTION}`
-      );
-      await logOut(String(userId), STATUS.WAIT_PAYMENT, 'OUT', 'text', 'payment instructions');
-      return;
-    }
-
     if (p.status === STATUS.WAIT_PAYMENT || p.status === STATUS.PAYMENT_SENT) {
       await ctx.reply(
-        'Чтобы подтвердить оплату, пришли чек (фото или документ) сюда в бота. Тогда смогу принять и передать менеджеру. Если уже отправил(а) — жди подтверждения.'
+        `${PHRASE_HINT_RECEIPT}. Тогда смогу принять и передать менеджеру. Если уже отправил(а) — жди подтверждения.`
       );
       return;
     }
@@ -155,16 +160,14 @@ export function createBot(): Bot {
       return;
     }
 
-    if (/оплатил|оплатила|перевёл|перевела|я перевёл|я перевела/i.test(text)) {
-      await ctx.reply(
-        'Чтобы подтвердить оплату, пришли чек (фото или документ) сюда в бота. Тогда смогу принять и передать менеджеру для подтверждения.'
-      );
+    if (/оплатил|оплатила|перевёл|перевела|сделал перевод|сделала перевод/i.test(text)) {
+      await ctx.reply(`${PHRASE_HINT_RECEIPT}. Тогда смогу принять и передать менеджеру.`);
       return;
     }
 
-    if (/покажи.*анкет|анкету покажи|мою анкет|покажи мою|где анкет/i.test(text) && (p.fio || p.city || p.phone)) {
+    if (/покажи.*анкет|анкету покажи|мою анкет|покажи мою|где анкет|уже заполнил|заполнил же/i.test(text) && (p.fio || p.city || p.phone)) {
       const fullAnketa = formatAnketa(p);
-      await ctx.reply(`Вот твоя анкета:\n\n${fullAnketa}`);
+      await ctx.reply(`Вот твоя анкета:\n\n${fullAnketa}\n\n${PHRASE_HINT_CONFIRM}`);
       return;
     }
 
@@ -175,11 +178,12 @@ export function createBot(): Bot {
     if (p.status === STATUS.NEW) {
       await setParticipantStatus(userId, STATUS.INFO);
     }
-    if (/хочу\s*(забронировать|записаться|участвовать|ехать)|бронирую|записываюсь/i.test(text)) {
+    if (PHRASE_BOOK.test(text)) {
       await setParticipantStatus(userId, STATUS.FORM_FILLING);
+      p = await getParticipant(userId, username, chatId);
       const next = getNextEmptyField(p);
       const prompt = next ? FIELD_PROMPTS[next] : '';
-      await ctx.reply(prompt || 'Анкета уже заполнена. Подтверди или измени данные.');
+      await ctx.reply(prompt || PHRASE_HINT_CONFIRM);
     }
   });
 
@@ -216,6 +220,14 @@ export function createBot(): Bot {
 
     const formStatusesVoice: string[] = [STATUS.FORM_FILLING, STATUS.FORM_CONFIRM];
     if (formStatusesVoice.includes(p.status)) {
+      if (p.status === STATUS.FORM_CONFIRM && PHRASE_CONFIRM_ANKETA.test(text)) {
+        await setParticipantStatus(userId, STATUS.WAIT_PAYMENT);
+        const again = formatAnketa(p);
+        await ctx.reply(
+          `Отлично! Реквизиты для задатка:\n\n${kb.PAYMENT_SBER}\n\nПовторяю анкету:\n${again}\n\n${kb.AFTER_PAYMENT_INSTRUCTION}\n\n${PHRASE_HINT_RECEIPT}`
+        );
+        return;
+      }
       const out = await getFormModeReply(text, p.status, p);
       const patch = out.form_patch || {};
       if (Object.keys(patch).length > 0) {
@@ -235,11 +247,11 @@ export function createBot(): Bot {
         await setParticipantStatus(userId, STATUS.FORM_CONFIRM);
         p = await getParticipant(userId, username, chatId);
         const fullAnketa = formatAnketa(p);
-        await ctx.reply(`Проверь анкету:\n\n${fullAnketa}\n\nВсё верно? Напиши «да» или «подтверждаю».`);
+        await ctx.reply(`Проверь анкету:\n\n${fullAnketa}\n\n${PHRASE_HINT_CONFIRM}`);
       } else if (isFormComplete(p)) {
         await setParticipantStatus(userId, STATUS.FORM_CONFIRM);
         const fullAnketa = formatAnketa(p);
-        await ctx.reply(out.reply_text + '\n\nТвоя анкета:\n' + fullAnketa + '\n\nВсё верно? Напиши «да» или «подтверждаю».');
+        await ctx.reply(out.reply_text + '\n\nТвоя анкета:\n' + fullAnketa + '\n\n' + PHRASE_HINT_CONFIRM);
       } else {
         const next = getNextEmptyField(p);
         await ctx.reply(out.reply_text + (next ? '\n\n' + FIELD_PROMPTS[next] : ''));
@@ -248,9 +260,7 @@ export function createBot(): Bot {
     }
 
     if (p.status === STATUS.WAIT_PAYMENT || p.status === STATUS.PAYMENT_SENT) {
-      await ctx.reply(
-        'Чтобы подтвердить оплату, пришли чек (фото или документ) сюда в бота. Тогда смогу принять и передать менеджеру.'
-      );
+      await ctx.reply(`${PHRASE_HINT_RECEIPT}. Тогда смогу принять и передать менеджеру.`);
       return;
     }
 
@@ -259,16 +269,14 @@ export function createBot(): Bot {
       return;
     }
 
-    if (/оплатил|оплатила|перевёл|перевела|я перевёл|я перевела/i.test(text)) {
-      await ctx.reply(
-        'Чтобы подтвердить оплату, пришли чек (фото или документ) сюда в бота. Тогда смогу принять и передать менеджеру для подтверждения.'
-      );
+    if (/оплатил|оплатила|перевёл|перевела|сделал перевод|сделала перевод/i.test(text)) {
+      await ctx.reply(`${PHRASE_HINT_RECEIPT}. Тогда смогу принять и передать менеджеру.`);
       return;
     }
 
-    if (/покажи.*анкет|анкету покажи|мою анкет|покажи мою|где анкет/i.test(text) && (p.fio || p.city || p.phone)) {
+    if (/покажи.*анкет|анкету покажи|мою анкет|покажи мою|где анкет|уже заполнил|заполнил же/i.test(text) && (p.fio || p.city || p.phone)) {
       const fullAnketa = formatAnketa(p);
-      await ctx.reply(`Вот твоя анкета:\n\n${fullAnketa}`);
+      await ctx.reply(`Вот твоя анкета:\n\n${fullAnketa}\n\n${PHRASE_HINT_CONFIRM}`);
       return;
     }
 
@@ -279,10 +287,11 @@ export function createBot(): Bot {
     if (p.status === STATUS.NEW) {
       await setParticipantStatus(userId, STATUS.INFO);
     }
-    if (/хочу\s*(забронировать|записаться|участвовать|ехать)|бронирую|записываюсь/i.test(text)) {
+    if (PHRASE_BOOK.test(text)) {
       await setParticipantStatus(userId, STATUS.FORM_FILLING);
+      p = await getParticipant(userId, username, chatId);
       const next = getNextEmptyField(p);
-      await ctx.reply(next ? FIELD_PROMPTS[next] : 'Анкета уже заполнена.');
+      await ctx.reply(next ? FIELD_PROMPTS[next] : PHRASE_HINT_CONFIRM);
     }
   });
 
