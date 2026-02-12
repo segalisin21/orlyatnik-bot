@@ -209,15 +209,24 @@ npx ts-node src/index.ts
 
 1. После сохранения переменных Railway автоматически пересоберёт и запустит проект. Дождись зелёного статуса **Deployed**.
 2. Открой сгенерированный домен в браузере: `https://твой-сервис.up.railway.app/health` — в ответ должно быть `ok`. Если нет — проверь логи в Railway (вкладка **Deployments** → клик по деплою → **View Logs**).
-3. Установи webhook в Telegram. В терминале выполни (подставь свой токен, домен и секрет):
+3. Установи webhook в Telegram.
+
+   **В PowerShell (Windows)** — вставь одну строку, без секрета (подставь свой BOT_TOKEN и домен):
+   ```powershell
+   Invoke-RestMethod -Uri "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=https://твой-сервис.up.railway.app/webhook" -Method Post
+   ```
+   С секретом (подставь BOT_TOKEN, домен и значение WEBHOOK_SECRET из Railway):
+   ```powershell
+   Invoke-RestMethod -Uri "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" -Method Post -Body @{url="https://твой-сервис.up.railway.app/webhook"; secret_token="<ТВОЙ_WEBHOOK_SECRET>"}
+   ```
+
+   **В Git Bash / Linux / macOS** — одной строкой:
    ```bash
    curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" -d "url=https://твой-сервис.up.railway.app/webhook" -d "secret_token=<ТВОЙ_WEBHOOK_SECRET>"
    ```
-   Без секрета (менее безопасно):
-   ```bash
-   curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=https://твой-сервис.up.railway.app/webhook"
-   ```
-   Значение `secret_token` должно совпадать с переменной `WEBHOOK_SECRET` в Railway. Тогда Telegram будет присылать его в заголовке, и бот будет принимать только запросы от Telegram.
+   Без секрета можно просто открыть в браузере: `https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=https://твой-сервис.up.railway.app/webhook`.
+
+   Значение `secret_token` должно совпадать с переменной `WEBHOOK_SECRET` в Railway.
 
 4. Проверка: напиши боту в Telegram. Бот должен ответить. Если нет — смотри логи в Railway и убедись, что webhook установлен: открой `https://api.telegram.org/bot<BOT_TOKEN>/getWebhookInfo`.
 
@@ -228,7 +237,12 @@ npx ts-node src/index.ts
 - **«src refspec main does not match any» при push:** значит, либо нет ни одного коммита, либо ветка называется не `main`. Выполни: `git add .` → `git commit -m "Initial"` → `git branch` → `git push -u origin master` или `git push -u origin main`. В URL репозитория должен быть **username**, не email.
 - **«remote: Repository not found» при push:** remote `origin` указывает на неверный URL (с email). Исправь: `git remote set-url origin https://github.com/segalisin21/orlyatnik-bot.git` (подставь свой username), затем снова `git push -u origin master`.
 - **Бот не отвечает:** проверь логи (Railway → Deployments → View Logs). Убедись, что `getWebhookInfo` показывает твой URL и что запросы доходят (можно временно добавить логирование в `index.ts`).
-- **Ошибки Google Sheets:** проверь, что листы называются именно «Участники» и «Логи», заголовки как в шаге 2, и что email сервис-аккаунта добавлен в таблицу с правом Редактор.
+- **Ошибки Google Sheets / «Requested entity was not found» в логах (в т.ч. из cron):**
+  1. **GOOGLE_SHEET_ID** в Railway должен быть **только ID таблицы**, без URL и без `gid`. Из ссылки `https://docs.google.com/spreadsheets/d/1ZJwu-iTiVknAQUmPmhIZQhejA5cXBlumv6a4mA2Z2M0/edit?gid=341077838` нужна только часть `1ZJwu-iTiVknAQUmPmhIZQhejA5cXBlumv6a4mA2Z2M0`.
+  2. Имена листов (вкладок) в таблице должны быть **точно** «Участники» (первый лист) и «Логи» — как в коде, без лишних пробелов.
+  3. Таблицу нужно **расшарить** с сервис-аккаунтом: в Google-таблице «Настройки доступа» → добавить email из JSON ключа (вид `...@....iam.gserviceaccount.com`) с правом **Редактор**.
+  После правок пересохрани переменные в Railway и при необходимости сделай Redeploy.
+- **Ошибки Google Sheets (общее):** проверь заголовки листа «Участники» как в шаге 2.
 - **Ошибки OpenAI:** проверь баланс и корректность `OPENAI_API_KEY`.
 - Смена домена или редеплой: после смены URL снова вызови `setWebhook` с новым адресом.
 
@@ -252,6 +266,30 @@ npx ts-node src/index.ts
 - Голосовые сообщения транскрибируются через Whisper и обрабатываются как текст.
 - Фото/документ в режиме ожидания оплаты считаются чеком: сохраняется `file_id`, админу уходит уведомление с анкетой и чеком.
 - Подтверждение: админ выставляет в таблице статус `CONFIRMED`; раз в 2 минуты cron находит таких пользователей без `final_sent_at`, отправляет финальное сообщение (чат + контакт Кристины) и проставляет `final_sent_at`.
+
+## Промпты и логика ведения клиента
+
+### Логика по шагам
+
+1. **NEW / INFO** — пользователь только пишет. Бот отвечает через **Sales-промпт** (консультация, база знаний), подводит к «Хочу забронировать». При фразах вроде «хочу забронировать» / «записываюсь» статус → **FORM_FILLING**, бот просит первое пустое поле анкеты.
+2. **FORM_FILLING / FORM_CONFIRM** — бот использует **Form-промпт**: LLM возвращает JSON с текстом ответа и полями анкеты из сообщения; поля сохраняются. Если анкета заполнена — показывается целиком, просим подтвердить («да» / «подтверждаю»).
+3. **FORM_CONFIRM** + пользователь написал «да»/«подтверждаю» → **WAIT_PAYMENT**: выдаются реквизиты и просьба прислать чек (фото/документ).
+4. **WAIT_PAYMENT / PAYMENT_SENT** — текстовые сообщения не меняют статус; фото/документ считаются чеком → **PAYMENT_SENT**, уведомление админу.
+5. **CONFIRMED** — финальный ответ: ссылка на чат и контакт менеджера (cron или сразу).
+
+Переходы статусов заданы в `src/fsm.ts` и не зависят от формулировок в промптах.
+
+### Где менять промпты
+
+| Что менять | Файл | Что править |
+|------------|------|-------------|
+| **Тон и роль Sales-агента** (консультация, «живой организатор») | `src/llm.ts` | Константа `SALES_SYSTEM` (стр. ~55–59). Первое предложение — роль и тон; ниже подставляется база знаний. |
+| **Факты для агента** (цены, даты, возражения, реквизиты) | `src/config.ts` | Объект `kb` — оттуда собирается блок знаний в `SALES_SYSTEM`. |
+| **Form-агент** (заполнение анкеты, извлечение полей) | `src/llm.ts` | В функции `getFormModeReply`: переменная `systemForm` (стр. ~100–112) и `FORM_JSON_INSTRUCTION`. |
+| **Подсказки по полям** («Напиши ФИО», «Из какого города?») | `src/bot.ts` | Объект `FIELD_PROMPTS` (стр. ~25–31). |
+| **Реквизиты, инструкция после оплаты** | `src/config.ts` | `kb.PAYMENT_SBER`, `kb.AFTER_PAYMENT_INSTRUCTION` и др. |
+
+После правок: `npm run build`, задеплой на Railway (или перезапуск локально).
 
 ## Лицензия
 
