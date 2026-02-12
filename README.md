@@ -148,14 +148,31 @@ npx ts-node src/index.ts
    git add .
    git commit -m "Initial: Orlyatnik bot"
    ```
-2. Создай репозиторий на GitHub (или GitLab) и запушь код:
+   **Важно:** без коммита ветки `main` (или `master`) не существует — тогда при push будет ошибка «src refspec main does not match any».
+
+2. Создай репозиторий на GitHub (пустой, без README). В URL используй **username**, не email: `https://github.com/ТВОЙ_USERNAME/orlyatnik-bot.git`.
+
+3. Подключи remote и запушь. Если Git создал ветку **master**, а не main — пушь ту ветку, что есть:
    ```bash
-   git remote add origin https://github.com/ТВОЙ_ЛОГИН/orlyatnik-bot.git
+   git remote add origin https://github.com/ТВОЙ_USERNAME/orlyatnik-bot.git
+   git branch
+   ```
+   Если видишь `* master`, то:
+   ```bash
+   git push -u origin master
+   ```
+   Если видишь `* main`, то:
+   ```bash
    git push -u origin main
    ```
-3. Зайди на [railway.app](https://railway.app), войди через GitHub.
-4. **New Project** → **Deploy from GitHub repo** → выбери репозиторий с ботом.
-5. Railway создаст сервис. Кликни по нему.
+   Либо переименуй ветку в main и запушь:
+   ```bash
+   git branch -M main
+   git push -u origin main
+   ```
+4. Зайди на [railway.app](https://railway.app), войди через GitHub.
+5. **New Project** → **Deploy from GitHub repo** → выбери репозиторий с ботом.
+6. Railway создаст сервис. Кликни по нему.
 
 ---
 
@@ -208,6 +225,8 @@ npx ts-node src/index.ts
 
 ### Шаг 8. Если что-то пошло не так
 
+- **«src refspec main does not match any» при push:** значит, либо нет ни одного коммита, либо ветка называется не `main`. Выполни: `git add .` → `git commit -m "Initial"` → `git branch` → `git push -u origin master` или `git push -u origin main`. В URL репозитория должен быть **username**, не email.
+- **«remote: Repository not found» при push:** remote `origin` указывает на неверный URL (с email). Исправь: `git remote set-url origin https://github.com/segalisin21/orlyatnik-bot.git` (подставь свой username), затем снова `git push -u origin master`.
 - **Бот не отвечает:** проверь логи (Railway → Deployments → View Logs). Убедись, что `getWebhookInfo` показывает твой URL и что запросы доходят (можно временно добавить логирование в `index.ts`).
 - **Ошибки Google Sheets:** проверь, что листы называются именно «Участники» и «Логи», заголовки как в шаге 2, и что email сервис-аккаунта добавлен в таблицу с правом Редактор.
 - **Ошибки OpenAI:** проверь баланс и корректность `OPENAI_API_KEY`.
