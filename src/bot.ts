@@ -95,7 +95,8 @@ export function createBot(): Bot {
     }
     await logOut(String(userId), p.status, 'IN', 'text', text.slice(0, 200));
 
-    if ([STATUS.FORM_FILLING, STATUS.FORM_CONFIRM].includes(p.status)) {
+    const formStatuses: string[] = [STATUS.FORM_FILLING, STATUS.FORM_CONFIRM];
+    if (formStatuses.includes(p.status)) {
       const out = await getFormModeReply(text, p.status, p);
       const patch = out.form_patch || {};
       if (Object.keys(patch).length > 0) {
@@ -198,7 +199,8 @@ export function createBot(): Bot {
     }
     await logOut(String(userId), p.status, 'IN', 'voice_transcribed', text.slice(0, 200));
 
-    if ([STATUS.FORM_FILLING, STATUS.FORM_CONFIRM].includes(p.status)) {
+    const formStatusesVoice: string[] = [STATUS.FORM_FILLING, STATUS.FORM_CONFIRM];
+    if (formStatusesVoice.includes(p.status)) {
       const out = await getFormModeReply(text, p.status, p);
       const patch = out.form_patch || {};
       if (Object.keys(patch).length > 0) {
