@@ -9,6 +9,7 @@ import { logger } from './logger.js';
 
 const PARTICIPANTS_SHEET = 'Участники';
 const LOGS_SHEET = 'Логи';
+const CONFIG_SHEET = 'Настройки';
 const PARTICIPANT_HEADERS = [
   'user_id', 'username', 'chat_id', 'status', 'fio', 'city', 'dob', 'companions',
   'phone', 'comment', 'shift', 'payment_proof_file_id', 'final_sent_at', 'updated_at', 'created_at', 'last_reminder_at',
@@ -347,3 +348,64 @@ export async function getParticipantsForReminders(
 }
 
 export const DEFAULT_SHIFT = '1';
+
+/** Read key-value config from sheet "Настройки". Columns A=key, B=value. Returns {} if sheet missing or empty. */
+export async function getConfigFromSheet(): Promise<Record<string, string>> {
+  return withRetry(async () => {
+    const sheets = getSheets();
+    try {
+      const res = await sheets.spreadsheets.values.get({
+        spreadsheetId: env.GOOGLE_SHEET_ID,
+        range: `'${CONFIG_SHEET}'!A2:B`,
+      });
+      const rows = (res.data.values ?? []) as string[][];
+      const out: Record<string, string> = {};
+      for (const row of rows) {
+        const k = (row[0] ?? '').trim();
+        if (k) out[k] = (row[1] ?? '').trim();
+      }
+      return out;
+    } catch (e: unknown) {
+      const msg = String((e as { message?: string })?.message ?? e);
+      if (msg.includes('Unable to parse range') || msg.includes('404') || msg.includes('not found')) {
+        return {};
+      }
+      throw e;
+    }
+  });
+}
+
+/** Write one config key to sheet. Updates existing row or appends. */
+export async function setConfigInSheet(key: string, value: string): Promise<void> {
+  return withRetry(async () => {
+    const sheets = getSheets();
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: env.GOOGLE_SHEET_ID,
+      range: `'${CONFIG_SHEET}'!A2:B`,
+    });
+    const rows = (res.data.values ?? []) as string[][];
+    let rowIndex = -1;
+    for (let i = 0; i < rows.length; i++) {
+      if ((rows[i][0] ?? '').trim() === key) {
+        rowIndex = i + 2;
+        break;
+      }
+    }
+    if (rowIndex >= 2) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: env.GOOGLE_SHEET_ID,
+        range: `'${CONFIG_SHEET}'!B${rowIndex}`,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: [[value]] },
+      });
+    } else {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: env.GOOGLE_SHEET_ID,
+        range: `'${CONFIG_SHEET}'!A:B`,
+        valueInputOption: 'USER_ENTERED',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: { values: [[key, value]] },
+      });
+    }
+  });
+}

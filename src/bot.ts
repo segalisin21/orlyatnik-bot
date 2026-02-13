@@ -3,7 +3,8 @@
  */
 
 import { Bot, InlineKeyboard } from 'grammy';
-import { env, kb, isAdmin } from './config.js';
+import { env, isAdmin } from './config.js';
+import { getKb, updateConfigKey, loadSheetConfig, EDITABLE_KEYS } from './runtime-config.js';
 import { logger } from './logger.js';
 import {
   getParticipant,
@@ -23,14 +24,9 @@ import { appendLog, updateUserFields, getParticipantByUserId, getParticipantsFor
 import { invalidateCache } from './fsm.js';
 import type { Participant } from './sheets.js';
 
-const FIELD_PROMPTS: Record<FormField, string> = {
-  fio: 'Напиши, пожалуйста, ФИО (как в паспорте).',
-  city: 'Из какого ты города?',
-  dob: 'Дата рождения? (можно в любом формате)',
-  companions: 'С кем едешь? (один/одна, вдвоём, думаешь — напиши как есть)',
-  phone: 'Номер телефона для связи?',
-  shift: 'Какая смена? (если не знаешь — напиши «по умолчанию»)',
-};
+function getFieldPrompts(): Record<FormField, string> {
+  return getKb().field_prompts;
+}
 
 /** Фразы, по которым переключается статус. Бот должен явно их подсказывать. */
 const PHRASE_BOOK = /(хочу|готов|давай)\s*(забронировать|записаться|участвовать|ехать)|бронирую|записываюсь|записывай|готов\s*забронировать|готов\s*записаться/i;
@@ -88,11 +84,13 @@ export function createBot(): Bot {
   }
 
   const adminBroadcastPending = new Map<number, { audience: 'all' | 'CONFIRMED' | 'waiting' }>();
+  const adminSettingsPending = new Map<number, { key: string }>();
 
   function getAdminMenuKeyboard(): InlineKeyboard {
     return new InlineKeyboard()
       .text('📢 Рассылка', 'admin_broadcast')
-      .text('📊 Статистика', 'admin_stats').row();
+      .text('📊 Статистика', 'admin_stats').row()
+      .text('⚙ Настройки', 'admin_settings');
   }
 
   function getBroadcastAudienceKeyboard(): InlineKeyboard {
@@ -173,6 +171,30 @@ export function createBot(): Bot {
         await ctx.reply('Админ-меню:', { reply_markup: getAdminMenuKeyboard() });
         return;
       }
+      if (data === 'admin_settings') {
+        await safeAnswer();
+        const kb = getKb();
+        const lines = EDITABLE_KEYS.map(({ key, label }) => {
+          const raw = key.startsWith('FIELD_PROMPT_') ? (kb.field_prompts as Record<string, string>)[key.replace('FIELD_PROMPT_', '')] ?? '—' : (kb as Record<string, unknown>)[key];
+          const val = typeof raw === 'string' ? (raw.slice(0, 40) + (raw.length > 40 ? '…' : '')) : String(raw ?? '—');
+          return `• ${label}: ${val}`;
+        });
+        const keyboard = new InlineKeyboard();
+        EDITABLE_KEYS.forEach(({ key, label }, i) => {
+          keyboard.text(label, `admin_set_${key}`);
+          if (i % 2 === 1) keyboard.row();
+        });
+        await ctx.reply('⚙ Настройки (из листа «Настройки» в таблице). Пустые — из кода.\n\n' + lines.join('\n'), { reply_markup: keyboard });
+        return;
+      }
+      if (data.startsWith('admin_set_')) {
+        const key = data.replace('admin_set_', '');
+        const label = EDITABLE_KEYS.find((e) => e.key === key)?.label ?? key;
+        adminSettingsPending.set(fromId!, { key });
+        await safeAnswer();
+        await ctx.reply(`Введите новое значение для «${label}» (одним сообщением). /cancel — отмена.`, { reply_markup: { remove_keyboard: true } });
+        return;
+      }
       if (!data.startsWith('confirm_')) {
         await safeAnswer('Неизвестная кнопка.');
         return;
@@ -224,7 +246,21 @@ export function createBot(): Bot {
     if (isAdmin(userId)) {
       if (text === '/cancel') {
         adminBroadcastPending.delete(userId);
+        adminSettingsPending.delete(userId);
         await ctx.reply('Отменено.');
+        return;
+      }
+      const settingsPending = adminSettingsPending.get(userId);
+      if (settingsPending) {
+        adminSettingsPending.delete(userId);
+        try {
+          await updateConfigKey(settingsPending.key, text);
+          const label = EDITABLE_KEYS.find((e) => e.key === settingsPending.key)?.label ?? settingsPending.key;
+          await ctx.reply(`✅ Сохранено: «${label}». Значение записано в лист «Настройки» — бот уже использует его.`);
+        } catch (e) {
+          logger.error('Settings save error', { error: String(e), key: settingsPending.key });
+          await ctx.reply('Ошибка записи в таблицу. Проверь, что лист «Настройки» есть в таблице.');
+        }
         return;
       }
       const pending = adminBroadcastPending.get(userId);
@@ -282,7 +318,7 @@ export function createBot(): Bot {
         await setParticipantStatus(userId, STATUS.WAIT_PAYMENT);
         const again = formatAnketa(p);
         await ctx.reply(
-          `Отлично! Реквизиты для задатка:\n\n${kb.PAYMENT_SBER}\n\nПовторяю анкету:\n${again}\n\n${kb.AFTER_PAYMENT_INSTRUCTION}\n\n${PHRASE_HINT_RECEIPT}`
+          `Отлично! Реквизиты для задатка:\n\n${getKb().PAYMENT_SBER}\n\nПовторяю анкету:\n${again}\n\n${getKb().AFTER_PAYMENT_INSTRUCTION}\n\n${PHRASE_HINT_RECEIPT}`
         );
         return;
       }
@@ -296,7 +332,7 @@ export function createBot(): Bot {
         if (patch.companions !== undefined) updates.companions = patch.companions.trim();
         if (patch.phone !== undefined) updates.phone = normalizePhone(patch.phone);
         if (patch.comment !== undefined) updates.comment = patch.comment.trim();
-        if (patch.shift !== undefined) updates.shift = patch.shift.trim() || kb.DEFAULT_SHIFT;
+        if (patch.shift !== undefined) updates.shift = patch.shift.trim() || getKb().DEFAULT_SHIFT;
         if (Object.keys(updates).length > 0) {
           p = await patchParticipant(userId, updates);
         }
@@ -315,7 +351,7 @@ export function createBot(): Bot {
         await ctx.reply(out.reply_text + (out.reply_text.includes('анкет') ? '' : '\n\nТвоя анкета:\n' + fullAnketa + '\n\n' + PHRASE_HINT_CONFIRM));
       } else {
         const next = getNextEmptyField(p);
-        const prompt = next ? FIELD_PROMPTS[next] : '';
+        const prompt = next ? getFieldPrompts()[next] : '';
         await ctx.reply(out.reply_text + (prompt ? '\n\n' + prompt : ''));
       }
       await logOut(String(userId), p.status, 'OUT', 'text', (out.reply_text || '').slice(0, 200));
@@ -356,7 +392,7 @@ export function createBot(): Bot {
       await setParticipantStatus(userId, STATUS.FORM_FILLING);
       p = await getParticipant(userId, username, chatId);
       const next = getNextEmptyField(p);
-      const prompt = next ? FIELD_PROMPTS[next] : '';
+      const prompt = next ? getFieldPrompts()[next] : '';
       await ctx.reply(prompt || PHRASE_HINT_CONFIRM);
     }
   });
@@ -398,7 +434,7 @@ export function createBot(): Bot {
         await setParticipantStatus(userId, STATUS.WAIT_PAYMENT);
         const again = formatAnketa(p);
         await ctx.reply(
-          `Отлично! Реквизиты для задатка:\n\n${kb.PAYMENT_SBER}\n\nПовторяю анкету:\n${again}\n\n${kb.AFTER_PAYMENT_INSTRUCTION}\n\n${PHRASE_HINT_RECEIPT}`
+          `Отлично! Реквизиты для задатка:\n\n${getKb().PAYMENT_SBER}\n\nПовторяю анкету:\n${again}\n\n${getKb().AFTER_PAYMENT_INSTRUCTION}\n\n${PHRASE_HINT_RECEIPT}`
         );
         return;
       }
@@ -412,7 +448,7 @@ export function createBot(): Bot {
         if (patch.companions !== undefined) updates.companions = patch.companions.trim();
         if (patch.phone !== undefined) updates.phone = normalizePhone(patch.phone);
         if (patch.comment !== undefined) updates.comment = patch.comment.trim();
-        if (patch.shift !== undefined) updates.shift = patch.shift.trim() || kb.DEFAULT_SHIFT;
+        if (patch.shift !== undefined) updates.shift = patch.shift.trim() || getKb().DEFAULT_SHIFT;
         if (Object.keys(updates).length > 0) {
           p = await patchParticipant(userId, updates);
         }
@@ -428,7 +464,7 @@ export function createBot(): Bot {
         await ctx.reply(out.reply_text + '\n\nТвоя анкета:\n' + fullAnketa + '\n\n' + PHRASE_HINT_CONFIRM);
       } else {
         const next = getNextEmptyField(p);
-        await ctx.reply(out.reply_text + (next ? '\n\n' + FIELD_PROMPTS[next] : ''));
+        await ctx.reply(out.reply_text + (next ? '\n\n' + getFieldPrompts()[next] : ''));
       }
       return;
     }
@@ -465,7 +501,7 @@ export function createBot(): Bot {
       await setParticipantStatus(userId, STATUS.FORM_FILLING);
       p = await getParticipant(userId, username, chatId);
       const next = getNextEmptyField(p);
-      await ctx.reply(next ? FIELD_PROMPTS[next] : PHRASE_HINT_CONFIRM);
+      await ctx.reply(next ? getFieldPrompts()[next] : PHRASE_HINT_CONFIRM);
     }
   });
 

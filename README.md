@@ -52,6 +52,7 @@ CHAT_INVITE_LINK=https://t.me/joinchat/...
   - `user_id`, `username`, `chat_id`, `status`, `fio`, `city`, `dob`, `companions`, `phone`, `comment`, `shift`, `payment_proof_file_id`, `final_sent_at`, `updated_at`, `created_at`
 - **Лист «Логи»**:
   - `timestamp`, `user_id`, `status`, `direction`, `message_type`, `text_preview`, `raw_json`
+- **Лист «Настройки»** (необязательно): настройки бота без правки кода. Колонки: **A** = ключ, **B** = значение. Админ меняет их через бота: **Админ-меню → ⚙ Настройки** → выбор параметра → ввод нового значения. Ключи: `NEXT_SHIFT_TEXT`, `DEFAULT_SHIFT`, `PRICE`, `DEPOSIT`, `PAYMENT_SBER`, `LOCATION`, `WHAT_INCLUDED`, `WHAT_TO_TAKE`, `OBJECTION_*`, `MEDIA_CHANNEL`, `AFTER_PAYMENT_INSTRUCTION`, `FIELD_PROMPT_fio`, `FIELD_PROMPT_city` и др. Если листа нет или ключа нет — используются значения из кода.
 
 Бот создаёт строки в «Участники» при первом обращении пользователя; «Логи» только дополняет.
 

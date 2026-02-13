@@ -7,6 +7,7 @@ import cron from 'node-cron';
 import { webhookCallback } from 'grammy';
 import { env } from './config.js';
 import { logger } from './logger.js';
+import { loadSheetConfig } from './runtime-config.js';
 import { createBot } from './bot.js';
 import {
   getParticipantsPendingFinalSend,
@@ -15,7 +16,7 @@ import {
 } from './sheets.js';
 import { invalidateCache } from './fsm.js';
 
-const bot = createBot();
+let bot: ReturnType<typeof createBot>;
 
 const REMINDER_INACTIVE_MS = 2 * 24 * 60 * 60 * 1000; // 2 days without activity
 const REMINDER_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000; // don't remind same user more than once per 7 days
@@ -85,7 +86,10 @@ function startCron(): void {
   logger.info('Cron: final send every 2 min, reminders daily at 10:00 Moscow');
 }
 
-function main(): void {
+async function main(): Promise<void> {
+  await loadSheetConfig();
+  bot = createBot();
+
   if (env.TELEGRAM_MODE === 'webhook') {
     const app = express();
     app.use(express.json());
@@ -112,4 +116,7 @@ function main(): void {
   }
 }
 
-main();
+main().catch((e) => {
+  logger.error('Fatal', { error: String(e), stack: (e as Error).stack });
+  process.exit(1);
+});
