@@ -90,21 +90,38 @@ export function createBot(): Bot {
     await next();
   });
 
-  bot.on('callback_query:data', async (ctx) => {
-    const data = ctx.callbackQuery.data;
-    const fromId = ctx.from?.id;
-    if (fromId !== env.ADMIN_CHAT_ID) {
-      await ctx.answerCallbackQuery({ text: 'Только менеджер может подтверждать.' });
-      return;
-    }
-    if (!data.startsWith('confirm_')) return;
-    const targetUserId = data.replace('confirm_', '');
-    const userIdNum = Number(targetUserId);
-    if (!userIdNum) return;
+  bot.on('callback_query', async (ctx) => {
+    let answered = false;
+    const safeAnswer = async (text?: string) => {
+      if (answered) return;
+      try {
+        await ctx.answerCallbackQuery(text ? { text } : {});
+        answered = true;
+      } catch (e) {
+        logger.error('answerCallbackQuery failed', { error: String(e) });
+      }
+    };
     try {
+      const data = ctx.callbackQuery.data ?? '';
+      const fromId = ctx.from?.id ?? ctx.callbackQuery.from?.id;
+      logger.info('Callback received', { data, fromId, adminId: env.ADMIN_CHAT_ID });
+      if (fromId !== env.ADMIN_CHAT_ID) {
+        await safeAnswer('Только менеджер может подтверждать.');
+        return;
+      }
+      if (!data.startsWith('confirm_')) {
+        await safeAnswer('Неизвестная кнопка.');
+        return;
+      }
+      const targetUserId = data.replace('confirm_', '');
+      const userIdNum = Number(targetUserId);
+      if (!userIdNum) {
+        await safeAnswer('Неверные данные.');
+        return;
+      }
       const p = await getParticipantByUserId(userIdNum);
       if (!p || p.status !== STATUS.PAYMENT_SENT) {
-        await ctx.answerCallbackQuery({ text: 'Уже подтверждено или участник не найден.' });
+        await safeAnswer('Уже подтверждено или участник не найден.');
         return;
       }
       const now = new Date().toISOString();
@@ -112,7 +129,7 @@ export function createBot(): Bot {
       invalidateCache(userIdNum);
       const finalText = `Ты в списке!\n\nЧат участников: ${env.CHAT_INVITE_LINK || '—'}\nМенеджер: @${env.MANAGER_TG_USERNAME}`;
       await bot.api.sendMessage(p.chat_id, finalText);
-      await ctx.answerCallbackQuery({ text: 'Оплата подтверждена' });
+      await safeAnswer('Оплата подтверждена');
       const msg = ctx.callbackQuery.message;
       const emptyKeyboard = { reply_markup: { inline_keyboard: [] as never[] } };
       if (msg && 'caption' in msg) {
@@ -125,8 +142,10 @@ export function createBot(): Bot {
       }
       logger.info('Payment confirmed via button', { user_id: targetUserId });
     } catch (e) {
-      logger.error('Confirm button error', { error: String(e), targetUserId });
-      await ctx.answerCallbackQuery({ text: 'Ошибка, попробуй в таблице.' });
+      logger.error('Confirm button error', { error: String(e), stack: (e as Error).stack });
+      await safeAnswer('Ошибка, попробуй в таблице.');
+    } finally {
+      await safeAnswer();
     }
   });
 
