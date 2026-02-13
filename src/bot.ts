@@ -3,7 +3,7 @@
  */
 
 import { Bot, InlineKeyboard } from 'grammy';
-import { env, kb } from './config.js';
+import { env, kb, isAdmin } from './config.js';
 import { logger } from './logger.js';
 import {
   getParticipant,
@@ -19,7 +19,7 @@ import {
 } from './fsm.js';
 import { getSalesReply, getFormModeReply } from './llm.js';
 import { transcribeVoice } from './voice.js';
-import { appendLog, updateUserFields, getParticipantByUserId } from './sheets.js';
+import { appendLog, updateUserFields, getParticipantByUserId, getParticipantsForBroadcast } from './sheets.js';
 import { invalidateCache } from './fsm.js';
 import type { Participant } from './sheets.js';
 
@@ -62,23 +62,44 @@ export function createBot(): Bot {
     }
   }
 
+  const adminChatIds = (): number[] =>
+    env.ADMIN_CHAT_IDS.length > 0 ? env.ADMIN_CHAT_IDS : env.ADMIN_CHAT_ID ? [env.ADMIN_CHAT_ID] : [];
+
   async function sendToAdmin(text: string, extra?: { photo?: string; document?: string; confirmUserId?: number }) {
-    if (!env.ADMIN_CHAT_ID) return;
+    const ids = adminChatIds();
+    if (ids.length === 0) return;
     const keyboard = extra?.confirmUserId
       ? new InlineKeyboard().text('✅ Подтвердить оплату', `confirm_${extra.confirmUserId}`)
       : undefined;
     const replyMarkup = keyboard ? { reply_markup: keyboard } : {};
-    try {
-      if (extra?.photo) {
-        await bot.api.sendPhoto(env.ADMIN_CHAT_ID, extra.photo, { caption: text, ...replyMarkup });
-      } else if (extra?.document) {
-        await bot.api.sendDocument(env.ADMIN_CHAT_ID, extra.document, { caption: text, ...replyMarkup });
-      } else {
-        await bot.api.sendMessage(env.ADMIN_CHAT_ID, text, keyboard ? { reply_markup: keyboard } : {});
+    for (const chatId of ids) {
+      try {
+        if (extra?.photo) {
+          await bot.api.sendPhoto(chatId, extra.photo, { caption: text, ...replyMarkup });
+        } else if (extra?.document) {
+          await bot.api.sendDocument(chatId, extra.document, { caption: text, ...replyMarkup });
+        } else {
+          await bot.api.sendMessage(chatId, text, keyboard ? { reply_markup: keyboard } : {});
+        }
+      } catch (e) {
+        logger.error('Send to admin failed', { error: String(e), adminChatId: chatId });
       }
-    } catch (e) {
-      logger.error('Send to admin failed', { error: String(e), adminChatId: env.ADMIN_CHAT_ID });
     }
+  }
+
+  const adminBroadcastPending = new Map<number, { audience: 'all' | 'CONFIRMED' | 'waiting' }>();
+
+  function getAdminMenuKeyboard(): InlineKeyboard {
+    return new InlineKeyboard()
+      .text('📢 Рассылка', 'admin_broadcast')
+      .text('📊 Статистика', 'admin_stats').row();
+  }
+
+  function getBroadcastAudienceKeyboard(): InlineKeyboard {
+    return new InlineKeyboard()
+      .text('Всем в таблице', 'admin_br_all')
+      .text('Подтверждённые', 'admin_br_confirmed').row()
+      .text('Ждут оплаты / чек', 'admin_br_waiting');
   }
 
   bot.use(async (ctx, next) => {
@@ -107,9 +128,49 @@ export function createBot(): Bot {
     try {
       const data = ctx.callbackQuery.data ?? '';
       const fromId = ctx.from?.id ?? ctx.callbackQuery.from?.id;
-      logger.info('Callback received', { data, fromId, adminId: env.ADMIN_CHAT_ID });
-      if (fromId !== env.ADMIN_CHAT_ID) {
+      logger.info('Callback received', { data, fromId });
+      if (fromId === undefined || !isAdmin(fromId)) {
         await safeAnswer('Только менеджер может подтверждать.');
+        return;
+      }
+      if (data === 'admin_broadcast') {
+        await safeAnswer();
+        await ctx.reply('Кому отправить рассылку?', { reply_markup: getBroadcastAudienceKeyboard() });
+        return;
+      }
+      if (data === 'admin_br_all' || data === 'admin_br_confirmed' || data === 'admin_br_waiting') {
+        const audience = data === 'admin_br_all' ? 'all' : data === 'admin_br_confirmed' ? 'CONFIRMED' : 'waiting';
+        adminBroadcastPending.set(fromId!, { audience });
+        await safeAnswer();
+        await ctx.reply(
+          'Напиши текст сообщения для рассылки (одним сообщением). Отправь /cancel чтобы отменить.',
+          { reply_markup: { remove_keyboard: true } }
+        );
+        return;
+      }
+      if (data === 'admin_stats') {
+        await safeAnswer();
+        try {
+          const [all, confirmed, waiting] = await Promise.all([
+            getParticipantsForBroadcast('all'),
+            getParticipantsForBroadcast('CONFIRMED'),
+            getParticipantsForBroadcast('waiting'),
+          ]);
+          await ctx.reply(
+            `📊 Участники в таблице:\n\n` +
+              `Всего с chat_id: ${all.length}\n` +
+              `Подтверждённые: ${confirmed.length}\n` +
+              `Ждут оплаты / чек: ${waiting.length}`
+          );
+        } catch (e) {
+          logger.error('Admin stats error', { error: String(e) });
+          await ctx.reply('Ошибка при запросе статистики.');
+        }
+        return;
+      }
+      if (data === 'admin_menu') {
+        await safeAnswer();
+        await ctx.reply('Админ-меню:', { reply_markup: getAdminMenuKeyboard() });
         return;
       }
       if (!data.startsWith('confirm_')) {
@@ -134,14 +195,15 @@ export function createBot(): Bot {
       await bot.api.sendMessage(p.chat_id, finalText);
       await safeAnswer('Оплата подтверждена');
       const msg = ctx.callbackQuery.message;
+      const adminChatId = msg?.chat?.id ?? adminChatIds()[0];
       const emptyKeyboard = { reply_markup: { inline_keyboard: [] as never[] } };
-      if (msg && 'caption' in msg) {
-        await ctx.api.editMessageCaption(env.ADMIN_CHAT_ID, msg.message_id, {
+      if (msg && 'caption' in msg && adminChatId) {
+        await ctx.api.editMessageCaption(adminChatId, msg.message_id, {
           caption: (msg.caption || '') + '\n\n✅ Подтверждено',
           ...emptyKeyboard,
         });
-      } else if (msg && 'text' in msg) {
-        await ctx.api.editMessageText(env.ADMIN_CHAT_ID, msg.message_id, (msg.text || '') + '\n\n✅ Подтверждено', emptyKeyboard);
+      } else if (msg && 'text' in msg && adminChatId) {
+        await ctx.api.editMessageText(adminChatId, msg.message_id, (msg.text || '') + '\n\n✅ Подтверждено', emptyKeyboard);
       }
       logger.info('Payment confirmed via button', { user_id: targetUserId });
     } catch (e) {
@@ -159,11 +221,49 @@ export function createBot(): Bot {
     const text = ctx.message.text?.trim() ?? '';
     if (!userId || !chatId) return;
 
-    if (text === '/start' && userId === env.ADMIN_CHAT_ID) {
-      await ctx.reply(
-        'Привет! Ты указан как админ/менеджер. Уведомления о чеках от участников будут приходить сюда. Нажми кнопку «Подтвердить оплату» под сообщением с чеком, чтобы подтвердить.'
-      );
-      return;
+    if (isAdmin(userId)) {
+      if (text === '/cancel') {
+        adminBroadcastPending.delete(userId);
+        await ctx.reply('Отменено.');
+        return;
+      }
+      const pending = adminBroadcastPending.get(userId);
+      if (pending) {
+        adminBroadcastPending.delete(userId);
+        try {
+          const list = await getParticipantsForBroadcast(pending.audience);
+          if (list.length === 0) {
+            await ctx.reply('Нет получателей для выбранной категории.');
+            return;
+          }
+          let sent = 0;
+          let failed = 0;
+          const delayMs = 50;
+          for (const p of list) {
+            try {
+              await bot.api.sendMessage(p.chat_id, text);
+              sent++;
+              await new Promise((r) => setTimeout(r, delayMs));
+            } catch (e) {
+              failed++;
+              logger.warn('Broadcast send failed', { chat_id: p.chat_id, user_id: p.user_id, error: String(e) });
+            }
+          }
+          await ctx.reply(`Рассылка завершена. Отправлено: ${sent}, ошибок: ${failed}.`);
+          logger.info('Admin broadcast', { audience: pending.audience, sent, failed });
+        } catch (e) {
+          logger.error('Broadcast error', { error: String(e) });
+          await ctx.reply('Ошибка при рассылке.');
+        }
+        return;
+      }
+      if (text === '/start' || text === '/admin') {
+        await ctx.reply(
+          'Привет! Админ-меню. Уведомления о чеках приходят сюда — подтверждай кнопкой под сообщением.',
+          { reply_markup: getAdminMenuKeyboard() }
+        );
+        return;
+      }
     }
 
     let p: Participant;

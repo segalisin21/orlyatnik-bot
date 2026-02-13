@@ -11,7 +11,7 @@ const PARTICIPANTS_SHEET = 'Участники';
 const LOGS_SHEET = 'Логи';
 const PARTICIPANT_HEADERS = [
   'user_id', 'username', 'chat_id', 'status', 'fio', 'city', 'dob', 'companions',
-  'phone', 'comment', 'shift', 'payment_proof_file_id', 'final_sent_at', 'updated_at', 'created_at',
+  'phone', 'comment', 'shift', 'payment_proof_file_id', 'final_sent_at', 'updated_at', 'created_at', 'last_reminder_at',
 ];
 const LOG_HEADERS = ['timestamp', 'user_id', 'status', 'direction', 'message_type', 'text_preview', 'raw_json'];
 
@@ -31,6 +31,8 @@ export interface Participant {
   final_sent_at: string;
   updated_at: string;
   created_at: string;
+  /** ISO date when we last sent a step-reminder (so we don't spam). */
+  last_reminder_at?: string;
   rowIndex?: number;
 }
 
@@ -111,6 +113,7 @@ function rowToParticipant(row: string[], rowIndex: number): Participant {
     final_sent_at: row[12] ?? '',
     updated_at: row[13] ?? '',
     created_at: row[14] ?? '',
+    last_reminder_at: row[15] ?? '',
     rowIndex: rowIndex + 2,
   };
 }
@@ -132,6 +135,7 @@ function participantToRow(p: Participant): string[] {
     p.final_sent_at ?? '',
     p.updated_at ?? '',
     p.created_at ?? '',
+    p.last_reminder_at ?? '',
   ];
 }
 
@@ -142,7 +146,7 @@ export async function getParticipantByUserId(userId: number): Promise<Participan
     const sheets = getSheets();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${PARTICIPANTS_SHEET}'!A2:O`,
+      range: `'${PARTICIPANTS_SHEET}'!A2:P`,
     });
     const rows = (res.data.values ?? []) as string[][];
     for (let i = 0; i < rows.length; i++) {
@@ -165,7 +169,7 @@ export async function getOrCreateUser(
     const sheets = getSheets();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${PARTICIPANTS_SHEET}'!A2:O`,
+      range: `'${PARTICIPANTS_SHEET}'!A2:P`,
     });
     const rows = (res.data.values ?? []) as string[][];
     for (let i = 0; i < rows.length; i++) {
@@ -190,10 +194,11 @@ export async function getOrCreateUser(
       final_sent_at: '',
       updated_at: now,
       created_at: now,
+      last_reminder_at: '',
     };
     await sheets.spreadsheets.values.append({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${PARTICIPANTS_SHEET}'!A:O`,
+      range: `'${PARTICIPANTS_SHEET}'!A:P`,
       valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values: [participantToRow(newRow)] },
@@ -212,7 +217,7 @@ export async function updateUserFields(
     const sheets = getSheets();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${PARTICIPANTS_SHEET}'!A2:O`,
+      range: `'${PARTICIPANTS_SHEET}'!A2:P`,
     });
     const rows = (res.data.values ?? []) as string[][];
     let rowIndex = -1;
@@ -231,7 +236,7 @@ export async function updateUserFields(
       ...patch,
       updated_at: new Date().toISOString(),
     };
-    const range = `'${PARTICIPANTS_SHEET}'!A${rowIndex + 2}:O${rowIndex + 2}`;
+    const range = `'${PARTICIPANTS_SHEET}'!A${rowIndex + 2}:P${rowIndex + 2}`;
     await sheets.spreadsheets.values.update({
       spreadsheetId: env.GOOGLE_SHEET_ID,
       range,
@@ -271,7 +276,7 @@ export async function getParticipantsPendingFinalSend(): Promise<Participant[]> 
     const sheets = getSheets();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${PARTICIPANTS_SHEET}'!A2:O`,
+      range: `'${PARTICIPANTS_SHEET}'!A2:P`,
     });
     const rows = (res.data.values ?? []) as string[][];
     const out: Participant[] = [];
@@ -280,6 +285,62 @@ export async function getParticipantsPendingFinalSend(): Promise<Participant[]> 
       if (p.status === 'CONFIRMED' && !(p.final_sent_at && p.final_sent_at.trim())) {
         out.push(p);
       }
+    }
+    return out;
+  });
+}
+
+/** Get participants for broadcast. statusFilter: 'all' | 'CONFIRMED' | 'WAIT_PAYMENT,PAYMENT_SENT'. */
+export async function getParticipantsForBroadcast(statusFilter: 'all' | 'CONFIRMED' | 'waiting'): Promise<Participant[]> {
+  return withRetry(async () => {
+    const sheets = getSheets();
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: env.GOOGLE_SHEET_ID,
+      range: `'${PARTICIPANTS_SHEET}'!A2:P`,
+    });
+    const rows = (res.data.values ?? []) as string[][];
+    const out: Participant[] = [];
+    const allowedStatuses =
+      statusFilter === 'all'
+        ? null
+        : statusFilter === 'CONFIRMED'
+          ? ['CONFIRMED']
+          : ['WAIT_PAYMENT', 'PAYMENT_SENT'];
+    for (let i = 0; i < rows.length; i++) {
+      const p = rowToParticipant(rows[i], i);
+      if (!p.chat_id || !p.chat_id.trim()) continue;
+      if (allowedStatuses === null || allowedStatuses.includes(p.status)) {
+        out.push(p);
+      }
+    }
+    return out;
+  });
+}
+
+const REMINDER_STATUSES = ['NEW', 'INFO', 'FORM_FILLING', 'FORM_CONFIRM', 'WAIT_PAYMENT', 'PAYMENT_SENT'] as const;
+
+/** Participants who went inactive: have chat_id, are on a step we remind for, updated_at older than inactiveMs, last reminder (if any) older than cooldownMs. */
+export async function getParticipantsForReminders(
+  inactiveMs: number,
+  cooldownMs: number
+): Promise<Participant[]> {
+  return withRetry(async () => {
+    const sheets = getSheets();
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: env.GOOGLE_SHEET_ID,
+      range: `'${PARTICIPANTS_SHEET}'!A2:P`,
+    });
+    const rows = (res.data.values ?? []) as string[][];
+    const now = Date.now();
+    const out: Participant[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      const p = rowToParticipant(rows[i], i);
+      if (!p.chat_id?.trim() || !REMINDER_STATUSES.includes(p.status as (typeof REMINDER_STATUSES)[number])) continue;
+      const updatedAt = p.updated_at ? new Date(p.updated_at).getTime() : 0;
+      if (now - updatedAt < inactiveMs) continue;
+      const lastReminder = p.last_reminder_at ? new Date(p.last_reminder_at).getTime() : 0;
+      if (lastReminder > 0 && now - lastReminder < cooldownMs) continue;
+      out.push(p);
     }
     return out;
   });

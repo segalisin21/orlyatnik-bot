@@ -10,7 +10,13 @@ export const env = {
   GOOGLE_SHEETS_CREDENTIALS: process.env.GOOGLE_SHEETS_CREDENTIALS ?? '',
   GOOGLE_SHEETS_CREDENTIALS_PATH: process.env.GOOGLE_SHEETS_CREDENTIALS_PATH ?? '',
   GOOGLE_SHEET_ID: process.env.GOOGLE_SHEET_ID ?? '',
+  /** One or more Telegram user IDs, comma-separated (e.g. "123,456"). Notifications and admin menu for all. */
   ADMIN_CHAT_ID: process.env.ADMIN_CHAT_ID ? Number(process.env.ADMIN_CHAT_ID) : 0,
+  /** Parsed list of admin IDs. If ADMIN_CHAT_ID is "123,456", this is [123, 456]. */
+  ADMIN_CHAT_IDS: (process.env.ADMIN_CHAT_ID ?? '')
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => n > 0),
   MANAGER_TG_USERNAME: process.env.MANAGER_TG_USERNAME ?? 'krisis_pr',
   CHAT_INVITE_LINK: process.env.CHAT_INVITE_LINK ?? '',
   PORT: process.env.PORT ? Number(process.env.PORT) : 3000,
@@ -39,3 +45,9 @@ export const kb = {
 } as const;
 
 export type Env = typeof env;
+
+/** True if chatId is one of the configured admins (ADMIN_CHAT_ID or comma-separated list). */
+export function isAdmin(chatId: number): boolean {
+  if (env.ADMIN_CHAT_IDS.length > 0) return env.ADMIN_CHAT_IDS.includes(chatId);
+  return env.ADMIN_CHAT_ID !== 0 && chatId === env.ADMIN_CHAT_ID;
+}
