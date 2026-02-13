@@ -2,7 +2,7 @@
  * Telegram bot: handlers for text, voice, photo, document. FSM-driven, LLM, Sheets.
  */
 
-import { Bot } from 'grammy';
+import { Bot, InlineKeyboard } from 'grammy';
 import { env, kb } from './config.js';
 import { logger } from './logger.js';
 import {
@@ -19,7 +19,8 @@ import {
 } from './fsm.js';
 import { getSalesReply, getFormModeReply } from './llm.js';
 import { transcribeVoice } from './voice.js';
-import { appendLog } from './sheets.js';
+import { appendLog, updateUserFields, getParticipantByUserId } from './sheets.js';
+import { invalidateCache } from './fsm.js';
 import type { Participant } from './sheets.js';
 
 const FIELD_PROMPTS: Record<FormField, string> = {
@@ -61,18 +62,22 @@ export function createBot(): Bot {
     }
   }
 
-  async function sendToAdmin(text: string, extra?: { caption?: string; photo?: string; document?: string }) {
+  async function sendToAdmin(text: string, extra?: { photo?: string; document?: string; confirmUserId?: number }) {
     if (!env.ADMIN_CHAT_ID) return;
+    const keyboard = extra?.confirmUserId
+      ? new InlineKeyboard().text('✅ Подтвердить оплату', `confirm_${extra.confirmUserId}`)
+      : undefined;
+    const replyMarkup = keyboard ? { reply_markup: keyboard } : {};
     try {
       if (extra?.photo) {
-        await bot.api.sendPhoto(env.ADMIN_CHAT_ID, extra.photo, { caption: text });
+        await bot.api.sendPhoto(env.ADMIN_CHAT_ID, extra.photo, { caption: text, ...replyMarkup });
       } else if (extra?.document) {
-        await bot.api.sendDocument(env.ADMIN_CHAT_ID, extra.document, { caption: text });
+        await bot.api.sendDocument(env.ADMIN_CHAT_ID, extra.document, { caption: text, ...replyMarkup });
       } else {
-        await bot.api.sendMessage(env.ADMIN_CHAT_ID, text);
+        await bot.api.sendMessage(env.ADMIN_CHAT_ID, text, keyboard ? { reply_markup: keyboard } : {});
       }
     } catch (e) {
-      logger.error('Send to admin failed', { error: String(e) });
+      logger.error('Send to admin failed', { error: String(e), adminChatId: env.ADMIN_CHAT_ID });
     }
   }
 
@@ -85,12 +90,59 @@ export function createBot(): Bot {
     await next();
   });
 
+  bot.on('callback_query:data', async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    const fromId = ctx.from?.id;
+    if (fromId !== env.ADMIN_CHAT_ID) {
+      await ctx.answerCallbackQuery({ text: 'Только менеджер может подтверждать.' });
+      return;
+    }
+    if (!data.startsWith('confirm_')) return;
+    const targetUserId = data.replace('confirm_', '');
+    const userIdNum = Number(targetUserId);
+    if (!userIdNum) return;
+    try {
+      const p = await getParticipantByUserId(userIdNum);
+      if (!p || p.status !== STATUS.PAYMENT_SENT) {
+        await ctx.answerCallbackQuery({ text: 'Уже подтверждено или участник не найден.' });
+        return;
+      }
+      const now = new Date().toISOString();
+      await updateUserFields(userIdNum, { status: STATUS.CONFIRMED, final_sent_at: now });
+      invalidateCache(userIdNum);
+      const finalText = `Ты в списке!\n\nЧат участников: ${env.CHAT_INVITE_LINK || '—'}\nМенеджер: @${env.MANAGER_TG_USERNAME}`;
+      await bot.api.sendMessage(p.chat_id, finalText);
+      await ctx.answerCallbackQuery({ text: 'Оплата подтверждена' });
+      const msg = ctx.callbackQuery.message;
+      const emptyKeyboard = { reply_markup: { inline_keyboard: [] as never[] } };
+      if (msg && 'caption' in msg) {
+        await ctx.api.editMessageCaption(env.ADMIN_CHAT_ID, msg.message_id, {
+          caption: (msg.caption || '') + '\n\n✅ Подтверждено',
+          ...emptyKeyboard,
+        });
+      } else if (msg && 'text' in msg) {
+        await ctx.api.editMessageText(env.ADMIN_CHAT_ID, msg.message_id, (msg.text || '') + '\n\n✅ Подтверждено', emptyKeyboard);
+      }
+      logger.info('Payment confirmed via button', { user_id: targetUserId });
+    } catch (e) {
+      logger.error('Confirm button error', { error: String(e), targetUserId });
+      await ctx.answerCallbackQuery({ text: 'Ошибка, попробуй в таблице.' });
+    }
+  });
+
   bot.on('message:text', async (ctx) => {
     const userId = ctx.from?.id;
     const chatId = ctx.chat?.id;
     const username = ctx.from?.username ?? '';
     const text = ctx.message.text?.trim() ?? '';
     if (!userId || !chatId) return;
+
+    if (text === '/start' && userId === env.ADMIN_CHAT_ID) {
+      await ctx.reply(
+        'Привет! Ты указан как админ/менеджер. Уведомления о чеках от участников будут приходить сюда. Нажми кнопку «Подтвердить оплату» под сообщением с чеком, чтобы подтвердить.'
+      );
+      return;
+    }
 
     let p: Participant;
     try {
@@ -321,8 +373,8 @@ export function createBot(): Bot {
     await setParticipantStatus(userId, STATUS.PAYMENT_SENT, { payment_proof_file_id: fileId });
     const updated = await getParticipant(userId, username, chatId);
     const anketa = formatAnketa(updated);
-    const adminText = `Чек (фото) от участника.\n@${username} (id: ${userId})\n\n${anketa}\n\nПодтверди оплату в таблице (статус CONFIRMED).`;
-    await sendToAdmin(adminText, { photo: fileId });
+    const adminText = `Чек (фото) от участника.\n@${username} (id: ${userId})\n\n${anketa}\n\nНажми кнопку ниже или измени статус в таблице на CONFIRMED.`;
+    await sendToAdmin(adminText, { photo: fileId, confirmUserId: userId });
     await ctx.reply('Принял, ждём подтверждения. Как только менеджер подтвердит — пришлю ссылку на чат и контакт.');
     await logOut(String(userId), STATUS.PAYMENT_SENT, 'OUT', 'text', 'payment received');
   });
@@ -353,8 +405,8 @@ export function createBot(): Bot {
     await setParticipantStatus(userId, STATUS.PAYMENT_SENT, { payment_proof_file_id: fileId });
     const updated = await getParticipant(userId, username, chatId);
     const anketa = formatAnketa(updated);
-    const adminText = `Чек (документ) от участника.\n@${username} (id: ${userId})\n\n${anketa}\n\nПодтверди оплату в таблице (статус CONFIRMED).`;
-    await sendToAdmin(adminText, { document: fileId });
+    const adminText = `Чек (документ) от участника.\n@${username} (id: ${userId})\n\n${anketa}\n\nНажми кнопку ниже или измени статус в таблице на CONFIRMED.`;
+    await sendToAdmin(adminText, { document: fileId, confirmUserId: userId });
     await ctx.reply('Принял, ждём подтверждения. Как только менеджер подтвердит — пришлю ссылку на чат и контакт.');
     await logOut(String(userId), STATUS.PAYMENT_SENT, 'OUT', 'text', 'payment received');
   });
