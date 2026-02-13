@@ -365,11 +365,6 @@ export function createBot(): Bot {
       return;
     }
 
-    if (p.status === STATUS.CONFIRMED) {
-      await ctx.reply(`Ты уже в списке! Чат: ${env.CHAT_INVITE_LINK || '—'}. Менеджер: @${env.MANAGER_TG_USERNAME}`);
-      return;
-    }
-
     if (/оплатил|оплатила|перевёл|перевела|сделал перевод|сделала перевод/i.test(text)) {
       await ctx.reply(`${PHRASE_HINT_RECEIPT}. Тогда смогу принять и передать менеджеру.`);
       return;
@@ -388,7 +383,7 @@ export function createBot(): Bot {
     if (p.status === STATUS.NEW) {
       await setParticipantStatus(userId, STATUS.INFO);
     }
-    if (PHRASE_BOOK.test(text)) {
+    if (PHRASE_BOOK.test(text) && p.status !== STATUS.CONFIRMED) {
       await setParticipantStatus(userId, STATUS.FORM_FILLING);
       p = await getParticipant(userId, username, chatId);
       const next = getNextEmptyField(p);
@@ -474,11 +469,6 @@ export function createBot(): Bot {
       return;
     }
 
-    if (p.status === STATUS.CONFIRMED) {
-      await ctx.reply(`Ты уже в списке! Чат: ${env.CHAT_INVITE_LINK || '—'}. Менеджер: @${env.MANAGER_TG_USERNAME}`);
-      return;
-    }
-
     if (/оплатил|оплатила|перевёл|перевела|сделал перевод|сделала перевод/i.test(text)) {
       await ctx.reply(`${PHRASE_HINT_RECEIPT}. Тогда смогу принять и передать менеджеру.`);
       return;
@@ -497,7 +487,7 @@ export function createBot(): Bot {
     if (p.status === STATUS.NEW) {
       await setParticipantStatus(userId, STATUS.INFO);
     }
-    if (PHRASE_BOOK.test(text)) {
+    if (PHRASE_BOOK.test(text) && p.status !== STATUS.CONFIRMED) {
       await setParticipantStatus(userId, STATUS.FORM_FILLING);
       p = await getParticipant(userId, username, chatId);
       const next = getNextEmptyField(p);
