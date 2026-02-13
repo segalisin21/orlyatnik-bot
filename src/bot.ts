@@ -83,7 +83,10 @@ export function createBot(): Bot {
 
   bot.use(async (ctx, next) => {
     const updateId = ctx.update.update_id;
+    const updateType = Object.keys(ctx.update).filter((k) => k !== 'update_id').join(', ') || 'unknown';
+    logger.info('Webhook update', { updateId, updateType });
     if (isUpdateProcessed(updateId)) {
+      logger.info('Update skipped (already processed)', { updateId });
       return;
     }
     markUpdateProcessed(updateId);
@@ -388,6 +391,10 @@ export function createBot(): Bot {
       await ctx.reply('Фото приму как чек только после того, как заполнишь анкету и перейдёшь к оплате. Пока что напиши текстом или голосом, что хочешь узнать.');
       return;
     }
+    if (p.status === STATUS.PAYMENT_SENT) {
+      await ctx.reply('Чек уже принят, ждём подтверждения от менеджера.');
+      return;
+    }
 
     await setParticipantStatus(userId, STATUS.PAYMENT_SENT, { payment_proof_file_id: fileId });
     const updated = await getParticipant(userId, username, chatId);
@@ -418,6 +425,10 @@ export function createBot(): Bot {
 
     if (p.status !== STATUS.WAIT_PAYMENT && p.status !== STATUS.PAYMENT_SENT) {
       await ctx.reply('Документ приму как чек только после анкеты и перехода к оплате. Пока напиши текстом или голосом.');
+      return;
+    }
+    if (p.status === STATUS.PAYMENT_SENT) {
+      await ctx.reply('Чек уже принят, ждём подтверждения от менеджера.');
       return;
     }
 

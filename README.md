@@ -209,26 +209,25 @@ npx ts-node src/index.ts
 
 1. После сохранения переменных Railway автоматически пересоберёт и запустит проект. Дождись зелёного статуса **Deployed**.
 2. Открой сгенерированный домен в браузере: `https://твой-сервис.up.railway.app/health` — в ответ должно быть `ok`. Если нет — проверь логи в Railway (вкладка **Deployments** → клик по деплою → **View Logs**).
-3. Установи webhook в Telegram.
+3. Установи webhook в Telegram. **Обязательно укажи `allowed_updates`** — иначе кнопка «Подтвердить оплату» не будет работать (Telegram не будет присылать `callback_query`).
 
-   **В PowerShell (Windows)** — вставь одну строку, без секрета (подставь свой BOT_TOKEN и домен):
+   **В PowerShell (Windows)** — с секретом и типами обновлений (подставь BOT_TOKEN, домен, WEBHOOK_SECRET):
    ```powershell
-   Invoke-RestMethod -Uri "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=https://твой-сервис.up.railway.app/webhook" -Method Post
+   Invoke-RestMethod -Uri "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" -Method Post -ContentType "application/json" -Body '{"url":"https://твой-сервис.up.railway.app/webhook","secret_token":"<ТВОЙ_WEBHOOK_SECRET>","allowed_updates":["message","callback_query","edited_message"]}'
    ```
-   С секретом (подставь BOT_TOKEN, домен и значение WEBHOOK_SECRET из Railway):
+   Без секрета:
    ```powershell
-   Invoke-RestMethod -Uri "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" -Method Post -Body @{url="https://твой-сервис.up.railway.app/webhook"; secret_token="<ТВОЙ_WEBHOOK_SECRET>"}
+   Invoke-RestMethod -Uri "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" -Method Post -ContentType "application/json" -Body '{"url":"https://твой-сервис.up.railway.app/webhook","allowed_updates":["message","callback_query","edited_message"]}'
    ```
 
-   **В Git Bash / Linux / macOS** — одной строкой:
+   **В Git Bash / Linux / macOS**:
    ```bash
-   curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" -d "url=https://твой-сервис.up.railway.app/webhook" -d "secret_token=<ТВОЙ_WEBHOOK_SECRET>"
+   curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" -H "Content-Type: application/json" -d '{"url":"https://твой-сервис.up.railway.app/webhook","secret_token":"<ТВОЙ_WEBHOOK_SECRET>","allowed_updates":["message","callback_query","edited_message"]}'
    ```
-   Без секрета можно просто открыть в браузере: `https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=https://твой-сервис.up.railway.app/webhook`.
 
    Значение `secret_token` должно совпадать с переменной `WEBHOOK_SECRET` в Railway.
 
-4. Проверка: напиши боту в Telegram. Бот должен ответить. Если нет — смотри логи в Railway и убедись, что webhook установлен: открой `https://api.telegram.org/bot<BOT_TOKEN>/getWebhookInfo`.
+4. Проверка: напиши боту в Telegram. Бот должен ответить. Открой `https://api.telegram.org/bot<BOT_TOKEN>/getWebhookInfo` и убедись, что в `allowed_updates` есть `callback_query`.
 
 ---
 
@@ -245,6 +244,7 @@ npx ts-node src/index.ts
 - **Ошибки Google Sheets (общее):** проверь заголовки листа «Участники» как в шаге 2.
 - **Ошибки OpenAI:** проверь баланс и корректность `OPENAI_API_KEY`.
 - Смена домена или редеплой: после смены URL снова вызови `setWebhook` с новым адресом.
+- **Кнопка «Подтвердить» не реагирует:** проверь, что webhook установлен с `allowed_updates`, включающим `callback_query`. Вызови `getWebhookInfo` — если в списке нет `callback_query`, переустанови webhook командой выше.
 
 ---
 
