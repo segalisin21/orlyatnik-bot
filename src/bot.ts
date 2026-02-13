@@ -175,7 +175,7 @@ export function createBot(): Bot {
         await safeAnswer();
         const kb = getKb();
         const lines = EDITABLE_KEYS.map(({ key, label }) => {
-          const raw = key.startsWith('FIELD_PROMPT_') ? (kb.field_prompts as Record<string, string>)[key.replace('FIELD_PROMPT_', '')] ?? '—' : (kb as Record<string, unknown>)[key];
+          const raw = key.startsWith('FIELD_PROMPT_') ? (kb.field_prompts as Record<string, string>)[key.replace('FIELD_PROMPT_', '')] ?? '—' : (kb as unknown as Record<string, unknown>)[key];
           const val = typeof raw === 'string' ? (raw.slice(0, 40) + (raw.length > 40 ? '…' : '')) : String(raw ?? '—');
           return `• ${label}: ${val}`;
         });
