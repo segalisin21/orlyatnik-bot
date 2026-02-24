@@ -20,6 +20,9 @@ export const env = {
   MANAGER_TG_USERNAME: process.env.MANAGER_TG_USERNAME ?? 'krisis_pr',
   CHAT_INVITE_LINK: process.env.CHAT_INVITE_LINK ?? '',
   PORT: process.env.PORT ? Number(process.env.PORT) : 3000,
+  /** YooKassa: shop id and secret key. If both set, payment link is used. */
+  YOO_KASSA_SHOP_ID: process.env.YOO_KASSA_SHOP_ID ?? '',
+  YOO_KASSA_SECRET_KEY: process.env.YOO_KASSA_SECRET_KEY ?? '',
 } as const;
 
 /** Knowledge base (later can be moved to CONFIG sheet) */
@@ -42,6 +45,9 @@ export const kb = {
   OBJECTION_SOLO: 'Больше половины приезжают соло. К утру субботы у тебя уже будет своя компания.',
   OBJECTION_NO_ALCOHOL: 'Есть спорт, мафия, костры, разговоры по душам. Не обязательно пить, чтобы кайфануть.',
   OBJECTION_NO_COMPANY: 'Компания сама найдётся, у нас вайб такой — никто не остаётся в стороне.',
+  /** Текст согласия на обработку персональных данных (показывается перед сбором анкеты). */
+  CONSENT_PD_TEXT:
+    'Для оформления брони мы собираем и обрабатываем твои персональные данные (ФИО, телефон, дата рождения и др.) в соответствии с законом. Они нужны только для организации поездки и связи с тобой. Нажимая кнопку ниже, ты даёшь согласие на обработку персональных данных.',
 } as const;
 
 export type Env = typeof env;

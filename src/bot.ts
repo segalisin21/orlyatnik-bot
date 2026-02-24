@@ -23,6 +23,7 @@ import { transcribeVoice } from './voice.js';
 import { appendLog, updateUserFields, getParticipantByUserId, getParticipantsForBroadcast } from './sheets.js';
 import { invalidateCache } from './fsm.js';
 import type { Participant } from './sheets.js';
+import { createPayment, isYooKassaEnabled } from './yookassa.js';
 
 function getFieldPrompts(): Record<FormField, string> {
   return getKb().field_prompts;
@@ -112,6 +113,8 @@ export function createBot(): Bot {
     await next();
   });
 
+  const PHRASE_CONSENT = /^согласен(\s+на\s+обработку(\s+персональных\s+данных)?)?$/i;
+
   bot.on('callback_query', async (ctx) => {
     let answered = false;
     const safeAnswer = async (text?: string) => {
@@ -127,6 +130,36 @@ export function createBot(): Bot {
       const data = ctx.callbackQuery.data ?? '';
       const fromId = ctx.from?.id ?? ctx.callbackQuery.from?.id;
       logger.info('Callback received', { data, fromId });
+
+      if (data === 'consent_ok') {
+        const uid = ctx.callbackQuery.from?.id;
+        const chatId = ctx.callbackQuery.message?.chat?.id;
+        const username = ctx.callbackQuery.from?.username ?? '';
+        if (!uid || !chatId) {
+          await safeAnswer();
+          return;
+        }
+        let p: Participant;
+        try {
+          p = await getParticipant(uid, username, chatId);
+        } catch (e) {
+          logger.error('getParticipant failed in consent', { userId: uid, error: String(e) });
+          await safeAnswer('Ошибка, попробуй ещё раз.');
+          return;
+        }
+        const now = new Date().toISOString();
+        if (!p.consent_at?.trim()) {
+          await patchParticipant(uid, { consent_at: now });
+        }
+        await setParticipantStatus(uid, STATUS.FORM_FILLING);
+        p = await getParticipant(uid, username, chatId);
+        const next = getNextEmptyField(p);
+        const prompt = next ? getFieldPrompts()[next] : '';
+        await ctx.reply(prompt || PHRASE_HINT_CONFIRM);
+        await safeAnswer('Принято');
+        return;
+      }
+
       if (fromId === undefined || !isAdmin(fromId)) {
         await safeAnswer('Только менеджер может подтверждать.');
         return;
@@ -315,10 +348,25 @@ export function createBot(): Bot {
     const formStatuses: string[] = [STATUS.FORM_FILLING, STATUS.FORM_CONFIRM];
     if (formStatuses.includes(p.status)) {
       if (p.status === STATUS.FORM_CONFIRM && PHRASE_CONFIRM_ANKETA.test(text)) {
-        await setParticipantStatus(userId, STATUS.WAIT_PAYMENT);
         const again = formatAnketa(p);
+        const deposit = getKb().DEPOSIT;
+        let paymentLink: string | null = null;
+        let yookassaPaymentId: string | null = null;
+        if (isYooKassaEnabled()) {
+          const payment = await createPayment(deposit, userId, `Задаток Орлятник 21+, user ${userId}`);
+          if (payment) {
+            paymentLink = payment.confirmation_url;
+            yookassaPaymentId = payment.id;
+          }
+        }
+        await setParticipantStatus(userId, STATUS.WAIT_PAYMENT, {
+          ...(yookassaPaymentId ? { yookassa_payment_id: yookassaPaymentId } : {}),
+        });
+        const paymentBlock = paymentLink
+          ? `Оплатить задаток (${deposit} ₽) по ссылке:\n${paymentLink}\n\nИли перевести на Сбер:\n${getKb().PAYMENT_SBER}`
+          : `Реквизиты для задатка:\n\n${getKb().PAYMENT_SBER}`;
         await ctx.reply(
-          `Отлично! Реквизиты для задатка:\n\n${getKb().PAYMENT_SBER}\n\nПовторяю анкету:\n${again}\n\n${getKb().AFTER_PAYMENT_INSTRUCTION}\n\n${PHRASE_HINT_RECEIPT}`
+          `Отлично!\n\n${paymentBlock}\n\nПовторяю анкету:\n${again}\n\n${getKb().AFTER_PAYMENT_INSTRUCTION}\n\n${PHRASE_HINT_RECEIPT}`
         );
         return;
       }
@@ -376,19 +424,41 @@ export function createBot(): Bot {
       return;
     }
 
+    if (PHRASE_BOOK.test(text) && p.status !== STATUS.CONFIRMED) {
+      if (!p.consent_at?.trim()) {
+        const consentText = getKb().CONSENT_PD_TEXT;
+        const consentKeyboard = new InlineKeyboard().text('Согласен на обработку персональных данных', 'consent_ok');
+        await ctx.reply(consentText, { reply_markup: consentKeyboard });
+        await logOut(String(userId), p.status, 'OUT', 'text', 'consent request');
+        return;
+      }
+      await setParticipantStatus(userId, STATUS.FORM_FILLING);
+      p = await getParticipant(userId, username, chatId);
+      const next = getNextEmptyField(p);
+      const prompt = next ? getFieldPrompts()[next] : '';
+      await ctx.reply(prompt || PHRASE_HINT_CONFIRM);
+      await logOut(String(userId), STATUS.FORM_FILLING, 'OUT', 'text', 'first question');
+      return;
+    }
+
+    if ((p.status === STATUS.NEW || p.status === STATUS.INFO) && !p.consent_at?.trim() && PHRASE_CONSENT.test(text)) {
+      const now = new Date().toISOString();
+      await patchParticipant(userId, { consent_at: now });
+      await setParticipantStatus(userId, STATUS.FORM_FILLING);
+      p = await getParticipant(userId, username, chatId);
+      const next = getNextEmptyField(p);
+      const prompt = next ? getFieldPrompts()[next] : '';
+      await ctx.reply(prompt || PHRASE_HINT_CONFIRM);
+      await logOut(String(userId), STATUS.FORM_FILLING, 'OUT', 'text', 'consent then first question');
+      return;
+    }
+
     const reply = await getSalesReply(text);
     await ctx.reply(reply);
     await logOut(String(userId), p.status, 'OUT', 'text', reply.slice(0, 200));
 
     if (p.status === STATUS.NEW) {
       await setParticipantStatus(userId, STATUS.INFO);
-    }
-    if (PHRASE_BOOK.test(text) && p.status !== STATUS.CONFIRMED) {
-      await setParticipantStatus(userId, STATUS.FORM_FILLING);
-      p = await getParticipant(userId, username, chatId);
-      const next = getNextEmptyField(p);
-      const prompt = next ? getFieldPrompts()[next] : '';
-      await ctx.reply(prompt || PHRASE_HINT_CONFIRM);
     }
   });
 
@@ -426,10 +496,25 @@ export function createBot(): Bot {
     const formStatusesVoice: string[] = [STATUS.FORM_FILLING, STATUS.FORM_CONFIRM];
     if (formStatusesVoice.includes(p.status)) {
       if (p.status === STATUS.FORM_CONFIRM && PHRASE_CONFIRM_ANKETA.test(text)) {
-        await setParticipantStatus(userId, STATUS.WAIT_PAYMENT);
         const again = formatAnketa(p);
+        const deposit = getKb().DEPOSIT;
+        let paymentLink: string | null = null;
+        let yookassaPaymentId: string | null = null;
+        if (isYooKassaEnabled()) {
+          const payment = await createPayment(deposit, userId, `Задаток Орлятник 21+, user ${userId}`);
+          if (payment) {
+            paymentLink = payment.confirmation_url;
+            yookassaPaymentId = payment.id;
+          }
+        }
+        await setParticipantStatus(userId, STATUS.WAIT_PAYMENT, {
+          ...(yookassaPaymentId ? { yookassa_payment_id: yookassaPaymentId } : {}),
+        });
+        const paymentBlock = paymentLink
+          ? `Оплатить задаток (${deposit} ₽) по ссылке:\n${paymentLink}\n\nИли перевести на Сбер:\n${getKb().PAYMENT_SBER}`
+          : `Реквизиты для задатка:\n\n${getKb().PAYMENT_SBER}`;
         await ctx.reply(
-          `Отлично! Реквизиты для задатка:\n\n${getKb().PAYMENT_SBER}\n\nПовторяю анкету:\n${again}\n\n${getKb().AFTER_PAYMENT_INSTRUCTION}\n\n${PHRASE_HINT_RECEIPT}`
+          `Отлично!\n\n${paymentBlock}\n\nПовторяю анкету:\n${again}\n\n${getKb().AFTER_PAYMENT_INSTRUCTION}\n\n${PHRASE_HINT_RECEIPT}`
         );
         return;
       }

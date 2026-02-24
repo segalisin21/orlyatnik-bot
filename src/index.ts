@@ -13,8 +13,11 @@ import {
   getParticipantsPendingFinalSend,
   getParticipantsForReminders,
   updateUserFields,
+  getParticipantByUserId,
 } from './sheets.js';
-import { invalidateCache } from './fsm.js';
+import { invalidateCache, STATUS } from './fsm.js';
+import { handleYooKassaWebhook } from './yookassa.js';
+import { InlineKeyboard } from 'grammy';
 
 let bot: ReturnType<typeof createBot>;
 
@@ -86,33 +89,65 @@ function startCron(): void {
   logger.info('Cron: final send every 2 min, reminders daily at 10:00 Moscow');
 }
 
+function adminChatIds(): number[] {
+  return env.ADMIN_CHAT_IDS.length > 0 ? env.ADMIN_CHAT_IDS : env.ADMIN_CHAT_ID ? [env.ADMIN_CHAT_ID] : [];
+}
+
 async function main(): Promise<void> {
   await loadSheetConfig();
   bot = createBot();
 
-  if (env.TELEGRAM_MODE === 'webhook') {
-    const app = express();
-    app.use(express.json());
+  const app = express();
+  app.use(express.json());
 
+  app.post('/yookassa-webhook', async (req, res) => {
+    try {
+      const status = await handleYooKassaWebhook(req.body, {
+        getParticipantByUserId,
+        updateUserFields: (userId, patch) => updateUserFields(userId, patch),
+        invalidateCache,
+        sendToUser: async (chatId, text) => {
+          await bot.api.sendMessage(chatId, text);
+        },
+        sendToAdmin: async (text, confirmUserId) => {
+          const ids = adminChatIds();
+          const keyboard = confirmUserId
+            ? new InlineKeyboard().text('✅ Подтвердить оплату', `confirm_${confirmUserId}`)
+            : undefined;
+          for (const chatId of ids) {
+            await bot.api.sendMessage(chatId, text, keyboard ? { reply_markup: keyboard } : {});
+          }
+        },
+        STATUS,
+      });
+      res.status(status).send(status === 200 ? 'ok' : '');
+    } catch (e) {
+      logger.error('YooKassa webhook error', { error: String(e) });
+      res.status(500).send('error');
+    }
+  });
+
+  app.get('/health', (_req, res) => {
+    res.status(200).send('ok');
+  });
+
+  if (env.TELEGRAM_MODE === 'webhook') {
     app.post(
       '/webhook',
       webhookCallback(bot, 'express', env.WEBHOOK_SECRET ? { secretToken: env.WEBHOOK_SECRET } : undefined)
     );
+  }
 
-    app.get('/health', (_req, res) => {
-      res.status(200).send('ok');
-    });
+  const port = env.PORT || 3000;
+  app.listen(port, () => {
+    logger.info('HTTP server listening', { port, mode: env.TELEGRAM_MODE });
+  });
+  startCron();
 
-    const port = env.PORT || 3000;
-    app.listen(port, () => {
-      logger.info('Webhook server listening', { port });
-    });
-    startCron();
-  } else {
+  if (env.TELEGRAM_MODE !== 'webhook') {
     bot.start({
       onStart: (info) => logger.info('Bot started', { username: info.username }),
     });
-    startCron();
   }
 }
 

@@ -27,6 +27,7 @@ export interface RuntimeKb {
   OBJECTION_SOLO: string;
   OBJECTION_NO_ALCOHOL: string;
   OBJECTION_NO_COMPANY: string;
+  CONSENT_PD_TEXT: string;
   field_prompts: Record<FormField, string>;
 }
 
@@ -106,6 +107,7 @@ export const EDITABLE_KEYS: { key: string; label: string }[] = [
   { key: 'OBJECTION_NO_COMPANY', label: 'Возражение: нет компании' },
   { key: 'MEDIA_CHANNEL', label: 'Ссылка на фото/видео' },
   { key: 'AFTER_PAYMENT_INSTRUCTION', label: 'Инструкция после оплаты' },
+  { key: 'CONSENT_PD_TEXT', label: 'Текст согласия на обработку ПД' },
   { key: 'FIELD_PROMPT_fio', label: 'Вопрос: ФИО' },
   { key: 'FIELD_PROMPT_city', label: 'Вопрос: город' },
   { key: 'FIELD_PROMPT_dob', label: 'Вопрос: дата рождения' },
