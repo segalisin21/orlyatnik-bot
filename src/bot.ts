@@ -291,6 +291,7 @@ export function createBot(): Bot {
         }
         const event = data === 'event_orlyatnik' ? 'orlyatnik' : 'pizhamnik';
         try {
+          await getParticipant(uid, username, chatId);
           const patch: { event: string; shift?: string } = { event };
           if (event === 'pizhamnik') patch.shift = getKb('pizhamnik').DEFAULT_SHIFT;
           await patchParticipant(uid, patch);
