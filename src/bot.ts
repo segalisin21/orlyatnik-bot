@@ -293,39 +293,52 @@ export function createBot(): Bot {
           await safeAnswer();
           return;
         }
+        await safeAnswer('Записываю…');
         const event = data === 'event_orlyatnik' ? 'orlyatnik' : 'pizhamnik';
         const patch: { event: string; shift?: string } = { event };
         if (event === 'pizhamnik') patch.shift = getKb('pizhamnik').DEFAULT_SHIFT;
-        const run = async () => {
-          await getParticipant(uid, username, chatId);
-          await patchParticipant(uid, patch);
-        };
-        try {
-          await run();
-        } catch (e) {
-          const msg = String((e as Error)?.message ?? e);
-          if (msg.includes('Participant not found')) {
-            invalidateCache(uid);
-            try {
-              await run();
-            } catch (e2) {
-              logger.error('patchParticipant event failed (retry)', { userId: uid, error: String(e2) });
-              await safeAnswer('Ошибка, попробуй ещё раз.');
+        // Run Sheets + reply in background so webhook returns before Telegram timeout
+        const chatIdForBg = chatId;
+        void (async () => {
+          const run = async () => {
+            await getParticipant(uid, username, chatIdForBg);
+            await patchParticipant(uid, patch);
+          };
+          try {
+            await run();
+          } catch (e) {
+            const msg = String((e as Error)?.message ?? e);
+            if (msg.includes('Participant not found')) {
+              invalidateCache(uid);
+              try {
+                await run();
+              } catch (e2) {
+                logger.error('patchParticipant event failed (retry)', { userId: uid, error: String(e2) });
+                try {
+                  await bot.api.sendMessage(chatIdForBg, 'Ошибка, попробуй ещё раз.');
+                } catch (_) {}
+                return;
+              }
+            } else {
+              logger.error('patchParticipant event failed', { userId: uid, error: msg });
+              try {
+                await bot.api.sendMessage(chatIdForBg, 'Ошибка, попробуй ещё раз.');
+              } catch (_) {}
               return;
             }
-          } else {
-            logger.error('patchParticipant event failed', { userId: uid, error: msg });
-            await safeAnswer('Ошибка, попробуй ещё раз.');
-            return;
           }
-        }
-        await safeAnswer('Принято');
-        if (event === 'pizhamnik') {
-          const kb = getKb('pizhamnik');
-          await ctx.reply(kb.START_MESSAGE ?? '', { reply_markup: eventStartKeyboard() });
-        } else {
-          await ctx.reply('Добро пожаловать! Выбери кнопку или напиши вопрос в чат — даты, цены, условия или «хочу забронировать».', { reply_markup: eventStartKeyboard() });
-        }
+          const menuKb = eventStartKeyboard();
+          if (event === 'pizhamnik') {
+            const kb = getKb('pizhamnik');
+            await bot.api.sendMessage(chatIdForBg, kb.START_MESSAGE ?? '', { reply_markup: menuKb });
+          } else {
+            await bot.api.sendMessage(
+              chatIdForBg,
+              'Добро пожаловать! Выбери кнопку или напиши вопрос в чат — даты, цены, условия или «хочу забронировать».',
+              { reply_markup: menuKb }
+            );
+          }
+        })();
         return;
       }
 

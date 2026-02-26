@@ -174,7 +174,10 @@ async function main(): Promise<void> {
   if (env.TELEGRAM_MODE === 'webhook') {
     app.post(
       '/webhook',
-      webhookCallback(bot, 'express', env.WEBHOOK_SECRET ? { secretToken: env.WEBHOOK_SECRET } : undefined)
+      webhookCallback(bot, 'express', {
+        ...(env.WEBHOOK_SECRET ? { secretToken: env.WEBHOOK_SECRET } : {}),
+        timeoutMilliseconds: 60000,
+      })
     );
   }
 
