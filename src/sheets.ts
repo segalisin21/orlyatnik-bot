@@ -275,13 +275,25 @@ export async function getOrCreateUser(
  * When event changes to pizhamnik, moves row from Участники to Пижамник.
  * Reverse move (Пижамник → Участники) is not implemented: changing event to orlyatnik only updates the row in place on the current sheet.
  */
+/** Resolve participant by id, with short retries for eventual consistency after a just-created row. */
+async function getParticipantByUserIdWithRetry(userId: number, maxAttempts = 4): Promise<Participant | null> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const p = await getParticipantByUserId(userId);
+    if (p) return p;
+    if (attempt < maxAttempts - 1) {
+      await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+    }
+  }
+  return null;
+}
+
 export async function updateUserFields(
   userId: number,
   patch: Partial<Omit<Participant, 'user_id' | 'rowIndex'>>
 ): Promise<Participant> {
   const uid = String(userId);
   return withRetry(async () => {
-    const current = await getParticipantByUserId(userId);
+    const current = await getParticipantByUserIdWithRetry(userId);
     if (!current) throw new Error(`Participant not found: ${uid}`);
     const sheetSource = current.sheetSource ?? PARTICIPANTS_SHEET_ORLYATNIK;
     const updated: Participant = {

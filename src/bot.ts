@@ -182,7 +182,11 @@ export function createBot(): Bot {
 
     if (p.status === STATUS.FORM_FILLING) {
       const formOut = await getFormModeReply(text, p.status, p, ev);
-      const patch = formOut.form_patch || {};
+      let patch = formOut.form_patch || {};
+      const nextEmpty = getNextEmptyField(p);
+      if (nextEmpty === 'companions' && !patch.companions && text.trim().length > 0 && text.trim().length <= 200) {
+        patch = { ...patch, companions: text.trim() };
+      }
       if (Object.keys(patch).length > 0) {
         const phonePatch = patch.phone != null ? { ...patch, phone: normalizePhone(patch.phone) } : patch;
         p = await patchParticipant(userId, phonePatch);
@@ -290,15 +294,30 @@ export function createBot(): Bot {
           return;
         }
         const event = data === 'event_orlyatnik' ? 'orlyatnik' : 'pizhamnik';
-        try {
+        const patch: { event: string; shift?: string } = { event };
+        if (event === 'pizhamnik') patch.shift = getKb('pizhamnik').DEFAULT_SHIFT;
+        const run = async () => {
           await getParticipant(uid, username, chatId);
-          const patch: { event: string; shift?: string } = { event };
-          if (event === 'pizhamnik') patch.shift = getKb('pizhamnik').DEFAULT_SHIFT;
           await patchParticipant(uid, patch);
+        };
+        try {
+          await run();
         } catch (e) {
-          logger.error('patchParticipant event failed', { userId: uid, error: String(e) });
-          await safeAnswer('Ошибка, попробуй ещё раз.');
-          return;
+          const msg = String((e as Error)?.message ?? e);
+          if (msg.includes('Participant not found')) {
+            invalidateCache(uid);
+            try {
+              await run();
+            } catch (e2) {
+              logger.error('patchParticipant event failed (retry)', { userId: uid, error: String(e2) });
+              await safeAnswer('Ошибка, попробуй ещё раз.');
+              return;
+            }
+          } else {
+            logger.error('patchParticipant event failed', { userId: uid, error: msg });
+            await safeAnswer('Ошибка, попробуй ещё раз.');
+            return;
+          }
         }
         await safeAnswer('Принято');
         if (event === 'pizhamnik') {
