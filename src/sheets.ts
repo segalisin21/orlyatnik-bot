@@ -16,7 +16,7 @@ const ANSWERS_MAX_ROWS = 500;
 const PARTICIPANT_HEADERS = [
   'user_id', 'username', 'chat_id', 'status', 'fio', 'city', 'dob', 'companions',
   'phone', 'comment', 'shift', 'payment_proof_file_id', 'final_sent_at', 'updated_at', 'created_at', 'last_reminder_at',
-  'consent_at', 'yookassa_payment_id', 'event',
+  'consent_at', 'yookassa_payment_id', 'event', 'Согласие',
 ];
 const LOG_HEADERS = ['timestamp', 'user_id', 'status', 'direction', 'message_type', 'text_preview', 'raw_json'];
 
@@ -180,20 +180,34 @@ function participantToRow(p: Participant): string[] {
     p.consent_at ?? '',
     p.yookassa_payment_id ?? '',
     p.event ?? '',
+    (p.consent_at?.trim() ? 'Да' : ''),
   ];
+}
+
+/** Get one sheet's data; returns [] if sheet missing or range invalid. */
+async function getSheetRows(sheetName: string): Promise<string[][]> {
+  const sheets = getSheets();
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: env.GOOGLE_SHEET_ID,
+      range: `'${sheetName}'!A2:T`,
+    });
+    return (res.data.values ?? []) as string[][];
+  } catch (e: unknown) {
+    const msg = String((e as { message?: string })?.message ?? e);
+    if (msg.includes('Unable to parse range') || msg.includes('not found') || msg.includes('404')) {
+      return [];
+    }
+    throw e;
+  }
 }
 
 /** Get participant by user_id only. Searches Участники then Пижамник. Returns null if not found. */
 export async function getParticipantByUserId(userId: number): Promise<Participant | null> {
   const uid = String(userId);
   return withRetry(async () => {
-    const sheets = getSheets();
     for (const sheetName of [PARTICIPANTS_SHEET_ORLYATNIK, PARTICIPANTS_SHEET_PIZHAMNIK] as const) {
-      const res = await sheets.spreadsheets.values.get({
-        spreadsheetId: env.GOOGLE_SHEET_ID,
-        range: `'${sheetName}'!A2:S`,
-      });
-      const rows = (res.data.values ?? []) as string[][];
+      const rows = await getSheetRows(sheetName);
       for (let i = 0; i < rows.length; i++) {
         if (rows[i][0] === uid) {
           return rowToParticipant(rows[i], i, sheetName);
@@ -212,19 +226,15 @@ export async function getOrCreateUser(
 ): Promise<Participant> {
   const uid = String(userId);
   return withRetry(async () => {
-    const sheets = getSheets();
     for (const sheetName of [PARTICIPANTS_SHEET_ORLYATNIK, PARTICIPANTS_SHEET_PIZHAMNIK] as const) {
-      const res = await sheets.spreadsheets.values.get({
-        spreadsheetId: env.GOOGLE_SHEET_ID,
-        range: `'${sheetName}'!A2:S`,
-      });
-      const rows = (res.data.values ?? []) as string[][];
+      const rows = await getSheetRows(sheetName);
       for (let i = 0; i < rows.length; i++) {
         if (rows[i][0] === uid) {
           return rowToParticipant(rows[i], i, sheetName);
         }
       }
     }
+    const sheets = getSheets();
     const now = new Date().toISOString();
     const newRow: Participant = {
       user_id: uid,
@@ -250,7 +260,7 @@ export async function getOrCreateUser(
     };
     await sheets.spreadsheets.values.append({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A:S`,
+      range: `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A:T`,
       valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values: [participantToRow(newRow)] },
@@ -277,55 +287,66 @@ export async function updateUserFields(
 
     if (patch.event === 'pizhamnik' && sheetSource === PARTICIPANTS_SHEET_ORLYATNIK) {
       const sheets = getSheets();
-      const res = await sheets.spreadsheets.values.get({
-        spreadsheetId: env.GOOGLE_SHEET_ID,
-        range: `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A2:S`,
-      });
-      const rows = (res.data.values ?? []) as string[][];
+      const rows = await getSheetRows(PARTICIPANTS_SHEET_ORLYATNIK);
       const rowIndex = rows.findIndex((r) => r[0] === uid);
       if (rowIndex < 0) throw new Error(`Participant not found in Участники: ${uid}`);
-      const row = rows[rowIndex];
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: env.GOOGLE_SHEET_ID,
-        range: `'${PARTICIPANTS_SHEET_PIZHAMNIK}'!A:S`,
-        valueInputOption: 'USER_ENTERED',
-        insertDataOption: 'INSERT_ROWS',
-        requestBody: { values: [participantToRow({ ...updated, event: 'pizhamnik' })] },
-      });
-      const ids = await getSheetIds();
-      const sheetId = ids[PARTICIPANTS_SHEET_ORLYATNIK];
-      if (sheetId != null) {
-        await sheets.spreadsheets.batchUpdate({
+      try {
+        await sheets.spreadsheets.values.append({
           spreadsheetId: env.GOOGLE_SHEET_ID,
-          requestBody: {
-            requests: [
-              {
-                deleteDimension: {
-                  range: {
-                    sheetId,
-                    dimension: 'ROWS',
-                    startIndex: rowIndex + 1,
-                    endIndex: rowIndex + 2,
+          range: `'${PARTICIPANTS_SHEET_PIZHAMNIK}'!A:T`,
+          valueInputOption: 'USER_ENTERED',
+          insertDataOption: 'INSERT_ROWS',
+          requestBody: { values: [participantToRow({ ...updated, event: 'pizhamnik' })] },
+        });
+        const ids = await getSheetIds();
+        const sheetId = ids[PARTICIPANTS_SHEET_ORLYATNIK];
+        if (sheetId != null) {
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId: env.GOOGLE_SHEET_ID,
+            requestBody: {
+              requests: [
+                {
+                  deleteDimension: {
+                    range: {
+                      sheetId,
+                      dimension: 'ROWS',
+                      startIndex: rowIndex + 1,
+                      endIndex: rowIndex + 2,
+                    },
                   },
                 },
-              },
-            ],
-          },
-        });
+              ],
+            },
+          });
+        }
+        sheetIdsCache = null;
+        return { ...updated, event: 'pizhamnik', sheetSource: PARTICIPANTS_SHEET_PIZHAMNIK };
+      } catch (moveErr: unknown) {
+        const msg = String((moveErr as { message?: string })?.message ?? moveErr);
+        if (msg.includes('Unable to parse range') || msg.includes('not found') || msg.includes('404')) {
+          logger.warn('Sheet Пижамник missing or invalid, keeping participant in Участники with event pizhamnik', { userId: uid });
+          const range = `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A${rowIndex + 2}:T${rowIndex + 2}`;
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: env.GOOGLE_SHEET_ID,
+            range,
+            valueInputOption: 'USER_ENTERED',
+            requestBody: { values: [participantToRow({ ...updated, event: 'pizhamnik' })] },
+          });
+          return { ...updated, event: 'pizhamnik', sheetSource: PARTICIPANTS_SHEET_ORLYATNIK };
+        }
+        throw moveErr;
       }
-      sheetIdsCache = null;
-      return { ...updated, event: 'pizhamnik', sheetSource: PARTICIPANTS_SHEET_PIZHAMNIK };
     }
 
     const sheets = getSheets();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${sheetSource}'!A2:S`,
+      range: `'${sheetSource}'!A2:T`,
     });
     const rows = (res.data.values ?? []) as string[][];
     const rowIndex = rows.findIndex((r) => r[0] === uid);
     if (rowIndex < 0) throw new Error(`Participant not found: ${uid}`);
-    const range = `'${sheetSource}'!A${rowIndex + 2}:S${rowIndex + 2}`;
+    const range = `'${sheetSource}'!A${rowIndex + 2}:T${rowIndex + 2}`;
     await sheets.spreadsheets.values.update({
       spreadsheetId: env.GOOGLE_SHEET_ID,
       range,
@@ -367,7 +388,7 @@ export async function getParticipantsPendingFinalSend(): Promise<Participant[]> 
     for (const sheetName of [PARTICIPANTS_SHEET_ORLYATNIK, PARTICIPANTS_SHEET_PIZHAMNIK] as const) {
       const res = await sheets.spreadsheets.values.get({
         spreadsheetId: env.GOOGLE_SHEET_ID,
-        range: `'${sheetName}'!A2:S`,
+        range: `'${sheetName}'!A2:T`,
       });
       const rows = (res.data.values ?? []) as string[][];
       for (let i = 0; i < rows.length; i++) {
@@ -395,7 +416,7 @@ export async function getParticipantsForBroadcast(statusFilter: 'all' | 'CONFIRM
     for (const sheetName of [PARTICIPANTS_SHEET_ORLYATNIK, PARTICIPANTS_SHEET_PIZHAMNIK] as const) {
       const res = await sheets.spreadsheets.values.get({
         spreadsheetId: env.GOOGLE_SHEET_ID,
-        range: `'${sheetName}'!A2:S`,
+        range: `'${sheetName}'!A2:T`,
       });
       const rows = (res.data.values ?? []) as string[][];
       for (let i = 0; i < rows.length; i++) {
@@ -417,7 +438,7 @@ export async function getConfirmedCount(event: string): Promise<number> {
     const sheets = getSheets();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${sheetName}'!A2:S`,
+      range: `'${sheetName}'!A2:T`,
     });
     const rows = (res.data.values ?? []) as string[][];
     let count = 0;
@@ -443,7 +464,7 @@ export async function getParticipantsForReminders(
     for (const sheetName of [PARTICIPANTS_SHEET_ORLYATNIK, PARTICIPANTS_SHEET_PIZHAMNIK] as const) {
       const res = await sheets.spreadsheets.values.get({
         spreadsheetId: env.GOOGLE_SHEET_ID,
-        range: `'${sheetName}'!A2:S`,
+        range: `'${sheetName}'!A2:T`,
       });
       const rows = (res.data.values ?? []) as string[][];
       for (let i = 0; i < rows.length; i++) {
@@ -466,7 +487,7 @@ export async function getParticipantsForPizhamnikReminder(): Promise<Participant
     const sheets = getSheets();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${PARTICIPANTS_SHEET_PIZHAMNIK}'!A2:S`,
+      range: `'${PARTICIPANTS_SHEET_PIZHAMNIK}'!A2:T`,
     });
     const rows = (res.data.values ?? []) as string[][];
     const out: Participant[] = [];

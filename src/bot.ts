@@ -299,16 +299,24 @@ export function createBot(): Bot {
           await safeAnswer('Ошибка, попробуй ещё раз.');
           return;
         }
-        const now = new Date().toISOString();
-        if (!p.consent_at?.trim()) {
-          await patchParticipant(uid, { consent_at: now });
+        try {
+          const now = new Date().toISOString();
+          if (!p.consent_at?.trim()) {
+            await patchParticipant(uid, { consent_at: now });
+          }
+          await setParticipantStatus(uid, STATUS.FORM_FILLING);
+          p = await getParticipant(uid, username, chatId);
+          const next = getNextEmptyField(p);
+          const prompt = next ? getFieldPrompts(p.event)[next] : '';
+          await ctx.reply(prompt || PHRASE_HINT_CONFIRM, next === 'shift' ? { reply_markup: getShiftKeyboard(p.event) } : {});
+          await safeAnswer('Принято');
+        } catch (e) {
+          logger.error('Consent/setParticipant failed', { userId: uid, error: String(e), stack: (e as Error).stack });
+          await safeAnswer('Не удалось сохранить.');
+          await ctx.reply(
+            'Не получилось записать согласие в таблицу.\n\nЕсли ты выбрал(а) Пижамник — создай в Google-таблице лист с названием «Пижамник» (как у «Участники») и такой же первой строкой с заголовками. Потом нажми кнопку согласия снова.'
+          );
         }
-        await setParticipantStatus(uid, STATUS.FORM_FILLING);
-        p = await getParticipant(uid, username, chatId);
-        const next = getNextEmptyField(p);
-        const prompt = next ? getFieldPrompts(p.event)[next] : '';
-        await ctx.reply(prompt || PHRASE_HINT_CONFIRM, next === 'shift' ? { reply_markup: getShiftKeyboard(p.event) } : {});
-        await safeAnswer('Принято');
         return;
       }
 

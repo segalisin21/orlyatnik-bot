@@ -48,7 +48,7 @@ CHAT_INVITE_LINK=https://t.me/joinchat/...
 
 ### 3. Структура Google-таблицы
 
-- **Лист «Участники»** — только участники Орлятника (и новые пользователи до выбора мероприятия). Колонки: `user_id`, `username`, `chat_id`, `status`, `fio`, `city`, `dob`, `companions`, `phone`, `comment`, `shift`, `payment_proof_file_id`, `final_sent_at`, `updated_at`, `created_at`, `last_reminder_at`, `consent_at`, `yookassa_payment_id`, `event`.
+- **Лист «Участники»** — только участники Орлятника (и новые пользователи до выбора мероприятия). Колонки: `user_id`, `username`, `chat_id`, `status`, `fio`, `city`, `dob`, `companions`, `phone`, `comment`, `shift`, `payment_proof_file_id`, `final_sent_at`, `updated_at`, `created_at`, `last_reminder_at`, `consent_at`, `yookassa_payment_id`, `event`, `Согласие` (отметка «Да» после согласия на обработку персональных данных).
 - **Лист «Пижамник»** — только участники Пижамника. Те же колонки, что и в «Участники». Создай в той же таблице лист с именем **Пижамник** и такой же первой строкой (заголовки). При выборе «Пижамник» в боте строка переносится из «Участники» в «Пижамник».
 - **Лист «Логи»**:
   - `timestamp`, `user_id`, `status`, `direction`, `message_type`, `text_preview`, `raw_json`
@@ -102,9 +102,9 @@ npx ts-node src/index.ts
 1. Создай [Google-таблицу](https://sheets.google.com) (или открой существующую).
 2. В первой строке листа **«Участники»** впиши заголовки (одно слово в ячейку):
    ```
-   user_id | username | chat_id | status | fio | city | dob | companions | phone | comment | shift | payment_proof_file_id | final_sent_at | updated_at | created_at | last_reminder_at
+   user_id | username | chat_id | status | fio | city | dob | companions | phone | comment | shift | payment_proof_file_id | final_sent_at | updated_at | created_at | last_reminder_at | consent_at | yookassa_payment_id | event | Согласие
    ```
-   (Колонка `last_reminder_at` нужна для напоминаний; если таблица уже создана без неё — можно добавить заголовок вручную в столбец P.)
+   (`last_reminder_at` — для напоминаний; `consent_at` — дата согласия на обработку данных; **Согласие** — отметка «Да» после нажатия кнопки согласия. Лист «Пижамник» — те же заголовки.)
 3. Добавь второй лист, назови его **«Логи»**. В первой строке:
    ```
    timestamp | user_id | status | direction | message_type | text_preview | raw_json
