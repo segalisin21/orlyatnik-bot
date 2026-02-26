@@ -125,6 +125,28 @@ export async function getSalesReply(userMessage: string): Promise<string> {
   }
 }
 
+const REVIVE_SYSTEM = `Ты — живой организатор лагеря Орлятник 21+. Тебе дали готовый ответ на вопрос пользователя. Перефразируй его одним коротким сообщением: сохрани смысл и факты, но сделай тон чуть живее и дружелюбнее, как будто пишешь человеку в чат. Не добавляй новые факты и не меняй цифры/даты. Ответь только текстом ответа, без кавычек и пояснений.`;
+
+/** Revive a stored answer: one LLM call to rephrase for a livelier tone. */
+export async function reviveAnswer(storedAnswer: string): Promise<string> {
+  try {
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: REVIVE_SYSTEM },
+        { role: 'user', content: storedAnswer },
+      ],
+      temperature: 0.6,
+      max_tokens: 600,
+    });
+    const text = completion.choices[0]?.message?.content?.trim();
+    return text ?? storedAnswer;
+  } catch (e) {
+    logger.error('OpenAI revive error', { error: String(e) });
+    return storedAnswer;
+  }
+}
+
 function formatAnketaForLlm(p: Participant): string {
   return [
     `fio: ${p.fio || ''}`,
@@ -147,8 +169,10 @@ export async function getFormModeReply(
 
 Поля анкеты: fio, city, dob, companions, phone, comment, shift.
 - Извлекай из сообщения только то, что пользователь явно указал.
-- shift: обязательно указывай с датами. Актуальная смена: «${getKb().NEXT_SHIFT_TEXT}». Если пользователь не указал смену или написал «по умолчанию» — подставь в form_patch shift: «${getKb().NEXT_SHIFT_TEXT}», чтобы даты попали в базу.
-- Если человек что-то меняет — в reply_text можешь кратко подтвердить; код выведет анкету целиком для подтверждения.
+- shift: обязательно с датами. Доступные смены: «${getKb().AVAILABLE_SHIFTS}». Смена по умолчанию: «${getKb().DEFAULT_SHIFT}». Если пользователь не указал смену или написал «по умолчанию» — подставь в form_patch shift: «${getKb().DEFAULT_SHIFT}».
+- Если пользователь просит поменять смену, другую дату или спрашивает «какие даты» / «какие смены» — в reply_text перечисли смены из списка «${getKb().AVAILABLE_SHIFTS}» и попроси написать нужную дату (например: «У нас смены: ${getKb().AVAILABLE_SHIFTS}. Напиши, на какую хочешь»). Не придумывай даты — только из списка.
+- Если пользователь в ответ пишет дату/название смены (например «1 марта», «25 февраля») — извлеки это в form_patch.shift, даже если это похоже на одну из доступных смен частично (подставь точную формулировку из списка смен, если подходит).
+- Если человек что-то меняет — в reply_text кратко подтверди; код выведет анкету целиком для подтверждения.
 
 Ответь СТРОГО в формате JSON: intent, reply_text, form_patch, needs_confirmation (опционально).
 - intent: INFO | BOOK | UPDATE_FORM | PAYMENT | OTHER

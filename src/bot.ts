@@ -4,7 +4,7 @@
 
 import { Bot, InlineKeyboard } from 'grammy';
 import { env, isAdmin } from './config.js';
-import { getKb, updateConfigKey, loadSheetConfig, EDITABLE_KEYS } from './runtime-config.js';
+import { getKb, updateConfigKey, loadSheetConfig, EDITABLE_KEYS, getShiftsList } from './runtime-config.js';
 import { logger } from './logger.js';
 import {
   getParticipant,
@@ -18,15 +18,33 @@ import {
   STATUS,
   type FormField,
 } from './fsm.js';
-import { getSalesReply, getFormModeReply } from './llm.js';
+import { getSalesReply, getFormModeReply, reviveAnswer } from './llm.js';
 import { transcribeVoice } from './voice.js';
-import { appendLog, updateUserFields, getParticipantByUserId, getParticipantsForBroadcast } from './sheets.js';
+import {
+  appendLog,
+  updateUserFields,
+  getParticipantByUserId,
+  getParticipantsForBroadcast,
+  getAnswerFromStorage,
+  saveAnswer,
+  normalizeQuestion,
+} from './sheets.js';
 import { invalidateCache } from './fsm.js';
 import type { Participant } from './sheets.js';
 import { createPayment, isYooKassaEnabled } from './yookassa.js';
 
 function getFieldPrompts(): Record<FormField, string> {
   return getKb().field_prompts;
+}
+
+/** Inline keyboard: one button per shift (shift_0, shift_1, ...) + "По умолчанию" (shift_default). */
+function getShiftKeyboard(): InlineKeyboard {
+  const shifts = getShiftsList();
+  const kb = new InlineKeyboard();
+  shifts.forEach((_, i) => kb.text(shifts[i], `shift_${i}`));
+  if (shifts.length > 0) kb.row();
+  kb.text('По умолчанию', 'shift_default');
+  return kb;
 }
 
 /** Фразы, по которым переключается статус. Бот должен явно их подсказывать. */
@@ -155,8 +173,59 @@ export function createBot(): Bot {
         p = await getParticipant(uid, username, chatId);
         const next = getNextEmptyField(p);
         const prompt = next ? getFieldPrompts()[next] : '';
-        await ctx.reply(prompt || PHRASE_HINT_CONFIRM);
+        await ctx.reply(prompt || PHRASE_HINT_CONFIRM, next === 'shift' ? { reply_markup: getShiftKeyboard() } : {});
         await safeAnswer('Принято');
+        return;
+      }
+
+      if (data === 'change_shift') {
+        await safeAnswer();
+        await ctx.reply('Выбери смену:', { reply_markup: getShiftKeyboard() });
+        return;
+      }
+
+      if (data.startsWith('shift_')) {
+        const uid = ctx.callbackQuery.from?.id;
+        const chatId = ctx.callbackQuery.message?.chat?.id;
+        const username = ctx.callbackQuery.from?.username ?? '';
+        if (!uid || !chatId) {
+          await safeAnswer();
+          return;
+        }
+        let p: Participant;
+        try {
+          p = await getParticipant(uid, username, chatId);
+        } catch (e) {
+          logger.error('getParticipant failed in shift callback', { userId: uid, error: String(e) });
+          await safeAnswer('Ошибка, попробуй ещё раз.');
+          return;
+        }
+        const payload = data.replace('shift_', '');
+        const shifts = getShiftsList();
+        const chosenShift =
+          payload === 'default' ? getKb().DEFAULT_SHIFT : shifts[Number(payload)] ?? getKb().DEFAULT_SHIFT;
+        p = await patchParticipant(uid, { shift: chosenShift });
+        await safeAnswer('Принято');
+        const formStatuses = [STATUS.FORM_FILLING, STATUS.FORM_CONFIRM];
+        if (formStatuses.includes(p.status)) {
+          const next = getNextEmptyField(p);
+          if (!next) {
+            await setParticipantStatus(uid, STATUS.FORM_CONFIRM);
+            p = await getParticipant(uid, username, chatId);
+            const fullAnketa = formatAnketa(p);
+            await ctx.reply(`Проверь анкету:\n\n${fullAnketa}\n\n${PHRASE_HINT_CONFIRM}`);
+          } else {
+            const prompt = getFieldPrompts()[next];
+            await ctx.reply(
+              prompt,
+              next === 'shift' ? { reply_markup: getShiftKeyboard() } : {}
+            );
+          }
+        } else {
+          await ctx.reply(
+            `Записал смену: ${chosenShift}. Когда будешь готов — напиши «Хочу забронировать», эта смена подставится в анкету.`
+          );
+        }
         return;
       }
 
@@ -400,7 +469,8 @@ export function createBot(): Bot {
       } else {
         const next = getNextEmptyField(p);
         const prompt = next ? getFieldPrompts()[next] : '';
-        await ctx.reply(out.reply_text + (prompt ? '\n\n' + prompt : ''));
+        const opts = next === 'shift' ? { reply_markup: getShiftKeyboard() } : {};
+        await ctx.reply(out.reply_text + (prompt ? '\n\n' + prompt : ''), opts);
       }
       await logOut(String(userId), p.status, 'OUT', 'text', (out.reply_text || '').slice(0, 200));
       return;
@@ -420,7 +490,16 @@ export function createBot(): Bot {
 
     if (/покажи.*анкет|анкету покажи|мою анкет|покажи мою|где анкет|уже заполнил|заполнил же/i.test(text) && (p.fio || p.city || p.phone)) {
       const fullAnketa = formatAnketa(p);
-      await ctx.reply(`Вот твоя анкета:\n\n${fullAnketa}\n\n${PHRASE_HINT_CONFIRM}`);
+      const changeShiftKb = new InlineKeyboard().text('Изменить смену', 'change_shift');
+      await ctx.reply(`Вот твоя анкета:\n\n${fullAnketa}\n\n${PHRASE_HINT_CONFIRM}`, {
+        reply_markup: changeShiftKb,
+      });
+      return;
+    }
+
+    if (/какие смены|выбрать смену|на какую смену|какие даты|выбери смену/i.test(text)) {
+      await ctx.reply('Выбери смену:', { reply_markup: getShiftKeyboard() });
+      await logOut(String(userId), p.status, 'OUT', 'text', 'shift choice');
       return;
     }
 
@@ -436,7 +515,7 @@ export function createBot(): Bot {
       p = await getParticipant(userId, username, chatId);
       const next = getNextEmptyField(p);
       const prompt = next ? getFieldPrompts()[next] : '';
-      await ctx.reply(prompt || PHRASE_HINT_CONFIRM);
+      await ctx.reply(prompt || PHRASE_HINT_CONFIRM, next === 'shift' ? { reply_markup: getShiftKeyboard() } : {});
       await logOut(String(userId), STATUS.FORM_FILLING, 'OUT', 'text', 'first question');
       return;
     }
@@ -448,12 +527,20 @@ export function createBot(): Bot {
       p = await getParticipant(userId, username, chatId);
       const next = getNextEmptyField(p);
       const prompt = next ? getFieldPrompts()[next] : '';
-      await ctx.reply(prompt || PHRASE_HINT_CONFIRM);
+      await ctx.reply(prompt || PHRASE_HINT_CONFIRM, next === 'shift' ? { reply_markup: getShiftKeyboard() } : {});
       await logOut(String(userId), STATUS.FORM_FILLING, 'OUT', 'text', 'consent then first question');
       return;
     }
 
-    const reply = await getSalesReply(text);
+    const normQuestion = normalizeQuestion(text);
+    const stored = normQuestion ? await getAnswerFromStorage(normQuestion) : null;
+    let reply: string;
+    if (stored) {
+      reply = await reviveAnswer(stored);
+    } else {
+      reply = await getSalesReply(text);
+      if (normQuestion) await saveAnswer(text, reply);
+    }
     await ctx.reply(reply);
     await logOut(String(userId), p.status, 'OUT', 'text', reply.slice(0, 200));
 
@@ -544,7 +631,9 @@ export function createBot(): Bot {
         await ctx.reply(out.reply_text + '\n\nТвоя анкета:\n' + fullAnketa + '\n\n' + PHRASE_HINT_CONFIRM);
       } else {
         const next = getNextEmptyField(p);
-        await ctx.reply(out.reply_text + (next ? '\n\n' + getFieldPrompts()[next] : ''));
+        const prompt = next ? getFieldPrompts()[next] : '';
+        const opts = next === 'shift' ? { reply_markup: getShiftKeyboard() } : {};
+        await ctx.reply(out.reply_text + (prompt ? '\n\n' + prompt : ''), opts);
       }
       return;
     }
@@ -561,13 +650,30 @@ export function createBot(): Bot {
 
     if (/покажи.*анкет|анкету покажи|мою анкет|покажи мою|где анкет|уже заполнил|заполнил же/i.test(text) && (p.fio || p.city || p.phone)) {
       const fullAnketa = formatAnketa(p);
-      await ctx.reply(`Вот твоя анкета:\n\n${fullAnketa}\n\n${PHRASE_HINT_CONFIRM}`);
+      const changeShiftKbVoice = new InlineKeyboard().text('Изменить смену', 'change_shift');
+      await ctx.reply(`Вот твоя анкета:\n\n${fullAnketa}\n\n${PHRASE_HINT_CONFIRM}`, {
+        reply_markup: changeShiftKbVoice,
+      });
       return;
     }
 
-    const reply = await getSalesReply(text);
-    await ctx.reply(reply);
-    await logOut(String(userId), p.status, 'OUT', 'text', reply.slice(0, 200));
+    if (/какие смены|выбрать смену|на какую смену|какие даты|выбери смену/i.test(text)) {
+      await ctx.reply('Выбери смену:', { reply_markup: getShiftKeyboard() });
+      await logOut(String(userId), p.status, 'OUT', 'text', 'shift choice');
+      return;
+    }
+
+    const normQuestionVoice = normalizeQuestion(text);
+    const storedVoice = normQuestionVoice ? await getAnswerFromStorage(normQuestionVoice) : null;
+    let replyVoice: string;
+    if (storedVoice) {
+      replyVoice = await reviveAnswer(storedVoice);
+    } else {
+      replyVoice = await getSalesReply(text);
+      if (normQuestionVoice) await saveAnswer(text, replyVoice);
+    }
+    await ctx.reply(replyVoice);
+    await logOut(String(userId), p.status, 'OUT', 'text', replyVoice.slice(0, 200));
 
     if (p.status === STATUS.NEW) {
       await setParticipantStatus(userId, STATUS.INFO);
@@ -576,7 +682,8 @@ export function createBot(): Bot {
       await setParticipantStatus(userId, STATUS.FORM_FILLING);
       p = await getParticipant(userId, username, chatId);
       const next = getNextEmptyField(p);
-      await ctx.reply(next ? getFieldPrompts()[next] : PHRASE_HINT_CONFIRM);
+      const prompt = next ? getFieldPrompts()[next] : '';
+      await ctx.reply(prompt || PHRASE_HINT_CONFIRM, next === 'shift' ? { reply_markup: getShiftKeyboard() } : {});
     }
   });
 

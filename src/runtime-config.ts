@@ -23,6 +23,7 @@ export interface RuntimeKb {
   MEDIA_CHANNEL: string;
   AFTER_PAYMENT_INSTRUCTION: string;
   DEFAULT_SHIFT: string;
+  AVAILABLE_SHIFTS: string;
   OBJECTION_PRICE: string;
   OBJECTION_SOLO: string;
   OBJECTION_NO_ALCOHOL: string;
@@ -85,6 +86,15 @@ export function getKb(): RuntimeKb {
   } as RuntimeKb;
 }
 
+/** List of available shifts (from AVAILABLE_SHIFTS, comma-separated). */
+export function getShiftsList(): string[] {
+  const raw = getKb().AVAILABLE_SHIFTS || '';
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 /** Save one key to sheet and refresh cache. */
 export async function updateConfigKey(key: string, value: string): Promise<void> {
   await setConfigInSheet(key, value);
@@ -95,6 +105,7 @@ export async function updateConfigKey(key: string, value: string): Promise<void>
 export const EDITABLE_KEYS: { key: string; label: string }[] = [
   { key: 'NEXT_SHIFT_TEXT', label: 'Ближайшая смена (даты)' },
   { key: 'DEFAULT_SHIFT', label: 'Смена по умолчанию' },
+  { key: 'AVAILABLE_SHIFTS', label: 'Список смен (через запятую)' },
   { key: 'PRICE', label: 'Цена (₽)' },
   { key: 'DEPOSIT', label: 'Задаток (₽)' },
   { key: 'PAYMENT_SBER', label: 'Реквизиты Сбер' },

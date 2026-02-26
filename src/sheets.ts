@@ -10,6 +10,8 @@ import { logger } from './logger.js';
 const PARTICIPANTS_SHEET = 'Участники';
 const LOGS_SHEET = 'Логи';
 const CONFIG_SHEET = 'Настройки';
+const ANSWERS_SHEET = 'Ответы';
+const ANSWERS_MAX_ROWS = 500;
 const PARTICIPANT_HEADERS = [
   'user_id', 'username', 'chat_id', 'status', 'fio', 'city', 'dob', 'companions',
   'phone', 'comment', 'shift', 'payment_proof_file_id', 'final_sent_at', 'updated_at', 'created_at', 'last_reminder_at',
@@ -417,6 +419,134 @@ export async function setConfigInSheet(key: string, value: string): Promise<void
         insertDataOption: 'INSERT_ROWS',
         requestBody: { values: [[key, value]] },
       });
+    }
+  });
+}
+
+/** Normalize question for storage lookup: lowercase, trim, collapse spaces. */
+export function normalizeQuestion(question: string): string {
+  return question
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+/** Ensure "Ответы" sheet exists; create with headers if missing. Returns sheet id for delete ops. */
+async function ensureAnswersSheet(): Promise<number> {
+  const sheets = getSheets();
+  const meta = await sheets.spreadsheets.get({
+    spreadsheetId: env.GOOGLE_SHEET_ID,
+    fields: 'sheets(properties(sheetId,title))',
+  });
+  const tab = meta.data.sheets?.find((s) => (s.properties?.title ?? '') === ANSWERS_SHEET);
+  if (tab?.properties?.sheetId != null) {
+    return tab.properties.sheetId;
+  }
+  const addRes = await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: env.GOOGLE_SHEET_ID,
+    requestBody: {
+      requests: [{ addSheet: { properties: { title: ANSWERS_SHEET } } }],
+    },
+  });
+  const newSheetId = addRes.data.replies?.[0]?.addSheet?.properties?.sheetId;
+  if (newSheetId == null) {
+    throw new Error('Failed to create Answers sheet');
+  }
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: env.GOOGLE_SHEET_ID,
+    range: `'${ANSWERS_SHEET}'!A1:C1`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [['question_normalized', 'answer', 'updated_at']] },
+  });
+  return newSheetId;
+}
+
+/** Find stored answer by normalized question. Exact match first; then contains (user in key or key in user). */
+export async function getAnswerFromStorage(normalizedQuestion: string): Promise<string | null> {
+  if (!normalizedQuestion || normalizedQuestion.length < 2) return null;
+  return withRetry(async () => {
+    await ensureAnswersSheet();
+    const sheets = getSheets();
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: env.GOOGLE_SHEET_ID,
+      range: `'${ANSWERS_SHEET}'!A2:C`,
+    });
+    const rows = (res.data.values ?? []) as string[][];
+    for (const row of rows) {
+      const key = (row[0] ?? '').trim();
+      const answer = (row[1] ?? '').trim();
+      if (!key || !answer) continue;
+      if (key === normalizedQuestion) return answer;
+    }
+    for (const row of rows) {
+      const key = (row[0] ?? '').trim();
+      const answer = (row[1] ?? '').trim();
+      if (!key || !answer) continue;
+      if (normalizedQuestion.includes(key) || key.includes(normalizedQuestion)) return answer;
+    }
+    return null;
+  });
+}
+
+/** Save or update question–answer pair; trim to last ANSWERS_MAX_ROWS. */
+export async function saveAnswer(question: string, answer: string): Promise<void> {
+  const normalized = normalizeQuestion(question);
+  if (!normalized || !answer.trim()) return;
+  const now = new Date().toISOString();
+  return withRetry(async () => {
+    const sheetId = await ensureAnswersSheet();
+    const sheets = getSheets();
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: env.GOOGLE_SHEET_ID,
+      range: `'${ANSWERS_SHEET}'!A2:C`,
+    });
+    const rows = (res.data.values ?? []) as string[][];
+    let foundAt = -1;
+    for (let i = 0; i < rows.length; i++) {
+      if ((rows[i][0] ?? '').trim() === normalized) {
+        foundAt = i;
+        break;
+      }
+    }
+    if (foundAt >= 0) {
+      const range = `'${ANSWERS_SHEET}'!B${foundAt + 2}:C${foundAt + 2}`;
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: env.GOOGLE_SHEET_ID,
+        range,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: [[answer.trim(), now]] },
+      });
+      return;
+    }
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: env.GOOGLE_SHEET_ID,
+      range: `'${ANSWERS_SHEET}'!A:C`,
+      valueInputOption: 'USER_ENTERED',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values: [[normalized, answer.trim(), now]] },
+    });
+    const newCount = rows.length + 1;
+    if (newCount > ANSWERS_MAX_ROWS) {
+      const toDelete = newCount - ANSWERS_MAX_ROWS;
+      for (let i = 0; i < toDelete; i++) {
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: env.GOOGLE_SHEET_ID,
+          requestBody: {
+            requests: [
+              {
+                deleteDimension: {
+                  range: {
+                    sheetId,
+                    dimension: 'ROWS',
+                    startIndex: 1,
+                    endIndex: 2,
+                  },
+                },
+              },
+            ],
+          },
+        });
+      }
     }
   });
 }
