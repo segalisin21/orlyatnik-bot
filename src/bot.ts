@@ -61,6 +61,13 @@ function pizhamnikStartKeyboard(): InlineKeyboard {
     .text('Забронировать место', 'book_place');
 }
 
+function orlyatnikStartKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('Узнать программу', 'program')
+    .text('Условия и стоимость', 'conditions').row()
+    .text('Забронировать место', 'book_place');
+}
+
 /** Фразы, по которым переключается статус. Бот должен явно их подсказывать. */
 const PHRASE_BOOK = /(хочу|готов|давай)\s*(забронировать|записаться|участвовать|ехать)|бронирую|записываюсь|записывай|готов\s*забронировать|готов\s*записаться/i;
 const PHRASE_CONFIRM_ANKETA = /^(да|подтверждаю|ок|окей|всё верно|все верно|верно|готово|да,?\s*верно|подтверждаю анкету)$/i;
@@ -173,7 +180,9 @@ export function createBot(): Bot {
         }
         const event = data === 'event_orlyatnik' ? 'orlyatnik' : 'pizhamnik';
         try {
-          await patchParticipant(uid, { event });
+          const patch: { event: string; shift?: string } = { event };
+          if (event === 'pizhamnik') patch.shift = getKb('pizhamnik').DEFAULT_SHIFT;
+          await patchParticipant(uid, patch);
         } catch (e) {
           logger.error('patchParticipant event failed', { userId: uid, error: String(e) });
           await safeAnswer('Ошибка, попробуй ещё раз.');
@@ -184,7 +193,7 @@ export function createBot(): Bot {
           const kb = getKb('pizhamnik');
           await ctx.reply(kb.START_MESSAGE ?? '', { reply_markup: pizhamnikStartKeyboard() });
         } else {
-          await ctx.reply('Добро пожаловать! Напиши, что хочешь узнать — даты, цены, условия или «хочу забронировать».');
+          await ctx.reply('Добро пожаловать! Выбери кнопку или напиши вопрос в чат — даты, цены, условия или «хочу забронировать».', { reply_markup: orlyatnikStartKeyboard() });
         }
         return;
       }
@@ -204,13 +213,11 @@ export function createBot(): Bot {
           await safeAnswer();
           return;
         }
-        if ((p.event ?? '') !== 'pizhamnik') {
-          await safeAnswer();
-          return;
-        }
-        const kb = getKb('pizhamnik');
+        const ev = p.event ?? 'orlyatnik';
+        const kb = getKb(ev);
         const text = data === 'program' ? (kb.PROGRAM_TEXT ?? '') : (kb.CONDITIONS_TEXT ?? '');
-        await ctx.reply(text, { reply_markup: pizhamnikStartKeyboard() });
+        const menuKb = ev === 'pizhamnik' ? pizhamnikStartKeyboard() : orlyatnikStartKeyboard();
+        if (text) await ctx.reply(text, { reply_markup: menuKb });
         await safeAnswer();
         return;
       }
@@ -581,6 +588,10 @@ export function createBot(): Bot {
         await ctx.reply(kb.START_MESSAGE ?? '', { reply_markup: pizhamnikStartKeyboard() });
         return;
       }
+      if (ev === 'orlyatnik') {
+        await ctx.reply('Добро пожаловать! Выбери кнопку или напиши вопрос в чат — даты, цены, условия или «хочу забронировать».', { reply_markup: orlyatnikStartKeyboard() });
+        return;
+      }
       await ctx.reply('Добро пожаловать! Напиши, что хочешь узнать — даты, цены, условия или «хочу забронировать».');
       return;
     }
@@ -926,7 +937,8 @@ export function createBot(): Bot {
     await setParticipantStatus(userId, STATUS.PAYMENT_SENT, { payment_proof_file_id: fileId });
     const updated = await getParticipant(userId, username, chatId);
     const anketa = formatAnketa(updated);
-    const adminText = `Чек (фото) от участника.\n@${username} (id: ${userId})\n\n${anketa}\n\nНажми кнопку ниже или измени статус в таблице на CONFIRMED.`;
+    const eventLabel = updated.event === 'pizhamnik' ? 'Пижамник' : 'Орлятник 21+';
+    const adminText = `Чек (фото) от участника. Мероприятие: ${eventLabel}\n@${username} (id: ${userId})\n\n${anketa}\n\nНажми кнопку ниже или измени статус в таблице на CONFIRMED.`;
     await sendToAdmin(adminText, { photo: fileId, confirmUserId: userId });
     await ctx.reply('Принял, ждём подтверждения. Как только менеджер подтвердит — пришлю ссылку на чат и контакт.');
     if (updated.event === 'pizhamnik') {
@@ -966,7 +978,8 @@ export function createBot(): Bot {
     await setParticipantStatus(userId, STATUS.PAYMENT_SENT, { payment_proof_file_id: fileId });
     const updated = await getParticipant(userId, username, chatId);
     const anketa = formatAnketa(updated);
-    const adminText = `Чек (документ) от участника.\n@${username} (id: ${userId})\n\n${anketa}\n\nНажми кнопку ниже или измени статус в таблице на CONFIRMED.`;
+    const eventLabel = updated.event === 'pizhamnik' ? 'Пижамник' : 'Орлятник 21+';
+    const adminText = `Чек (документ) от участника. Мероприятие: ${eventLabel}\n@${username} (id: ${userId})\n\n${anketa}\n\nНажми кнопку ниже или измени статус в таблице на CONFIRMED.`;
     await sendToAdmin(adminText, { document: fileId, confirmUserId: userId });
     await ctx.reply('Принял, ждём подтверждения. Как только менеджер подтвердит — пришлю ссылку на чат и контакт.');
     if (updated.event === 'pizhamnik') {

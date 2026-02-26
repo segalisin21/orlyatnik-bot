@@ -101,7 +101,7 @@ export interface YooKassaWebhookPayload {
 export async function handleYooKassaWebhook(
   body: YooKassaWebhookPayload,
   deps: {
-    getParticipantByUserId: (userId: number) => Promise<{ user_id: string; chat_id: string; status: string; yookassa_payment_id?: string } | null>;
+    getParticipantByUserId: (userId: number) => Promise<{ user_id: string; chat_id: string; status: string; yookassa_payment_id?: string; event?: string } | null>;
     updateUserFields: (userId: number, patch: { status: string }) => Promise<unknown>;
     invalidateCache: (userId: number) => void;
     sendToUser: (chatId: string, text: string) => Promise<void>;
@@ -140,7 +140,8 @@ export async function handleYooKassaWebhook(
     logger.error('YooKassa: send to user failed', { userId, error: String(e) });
   }
   try {
-    await deps.sendToAdmin(`Оплата по ЮKassa получена.\nuser_id: ${p.user_id}\npayment_id: ${paymentId}\nПодтверди кнопкой после проверки.`, userId);
+    const eventLabel = p.event === 'pizhamnik' ? 'Пижамник' : 'Орлятник 21+';
+    await deps.sendToAdmin(`Оплата по ЮKassa получена. Мероприятие: ${eventLabel}\nuser_id: ${p.user_id}\npayment_id: ${paymentId}\nПодтверди кнопкой после проверки.`, userId);
   } catch (e) {
     logger.error('YooKassa: send to admin failed', { error: String(e) });
   }
