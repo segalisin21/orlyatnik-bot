@@ -303,26 +303,37 @@ export async function updateUserFields(
           insertDataOption: 'INSERT_ROWS',
           requestBody: { values: [participantToRow({ ...updated, event: 'pizhamnik' })] },
         });
-        const ids = await getSheetIds();
-        const sheetId = ids[PARTICIPANTS_SHEET_ORLYATNIK];
-        if (sheetId != null) {
-          await sheets.spreadsheets.batchUpdate({
-            spreadsheetId: env.GOOGLE_SHEET_ID,
-            requestBody: {
-              requests: [
-                {
-                  deleteDimension: {
-                    range: {
-                      sheetId,
-                      dimension: 'ROWS',
-                      startIndex: rowIndex + 1,
-                      endIndex: rowIndex + 2,
+        try {
+          const ids = await getSheetIds();
+          const sheetId = ids[PARTICIPANTS_SHEET_ORLYATNIK];
+          if (sheetId != null) {
+            await sheets.spreadsheets.batchUpdate({
+              spreadsheetId: env.GOOGLE_SHEET_ID,
+              requestBody: {
+                requests: [
+                  {
+                    deleteDimension: {
+                      range: {
+                        sheetId,
+                        dimension: 'ROWS',
+                        startIndex: rowIndex + 1,
+                        endIndex: rowIndex + 2,
+                      },
                     },
                   },
-                },
-              ],
-            },
-          });
+                ],
+              },
+            });
+          }
+        } catch (deleteErr) {
+          logger.error('Sheet move: append succeeded but delete failed — clearing old row to prevent duplicate', { userId: uid, error: String(deleteErr) });
+          const clearRange = `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A${rowIndex + 2}:T${rowIndex + 2}`;
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: env.GOOGLE_SHEET_ID,
+            range: clearRange,
+            valueInputOption: 'USER_ENTERED',
+            requestBody: { values: [participantToRow({ ...updated, event: 'pizhamnik', status: 'MOVED' } as Participant)] },
+          }).catch((e) => logger.error('Failed to mark old row as MOVED', { userId: uid, error: String(e) }));
         }
         sheetIdsCache = null;
         return { ...updated, event: 'pizhamnik', sheetSource: PARTICIPANTS_SHEET_PIZHAMNIK };
@@ -436,7 +447,9 @@ export async function getParticipantsForBroadcast(statusFilter: 'all' | 'CONFIRM
   });
 }
 
-/** Count participants with status CONFIRMED for event (for places limit). Reads only the event's sheet. */
+const OCCUPIED_STATUSES = new Set(['FORM_CONFIRM', 'WAIT_PAYMENT', 'PAYMENT_SENT', 'CONFIRMED']);
+
+/** Count participants occupying a slot (FORM_CONFIRM..CONFIRMED) for places limit. Reads only the event's sheet. */
 export async function getConfirmedCount(event: string): Promise<number> {
   return withRetry(async () => {
     const sheetName = getSheetForEvent(event);
@@ -449,7 +462,7 @@ export async function getConfirmedCount(event: string): Promise<number> {
     let count = 0;
     for (let i = 0; i < rows.length; i++) {
       const p = rowToParticipant(rows[i], i, sheetName);
-      if (p.status === 'CONFIRMED') count++;
+      if (OCCUPIED_STATUSES.has(p.status)) count++;
     }
     return count;
   });
