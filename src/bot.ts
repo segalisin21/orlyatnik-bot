@@ -605,6 +605,10 @@ export function createBot(): Bot {
       }
       const out = await getFormModeReply(text, p.status, p, p.event || 'orlyatnik');
       const patch = out.form_patch || {};
+      const nextEmpty = getNextEmptyField(p);
+      if (nextEmpty === 'companions' && !patch.companions && text.trim().length > 0 && text.trim().length <= 80) {
+        patch.companions = text.trim();
+      }
       if (Object.keys(patch).length > 0) {
         const updates: Partial<Participant> = {};
         const kbEv = getKb(p.event || 'orlyatnik');
@@ -798,6 +802,10 @@ export function createBot(): Bot {
       }
       const out = await getFormModeReply(text, p.status, p, ev);
       const patch = out.form_patch || {};
+      const nextEmptyVoice = getNextEmptyField(p);
+      if (nextEmptyVoice === 'companions' && !patch.companions && text.trim().length > 0 && text.trim().length <= 80) {
+        patch.companions = text.trim();
+      }
       if (Object.keys(patch).length > 0) {
         const updates: Partial<Participant> = {};
         const kbEv = getKb(ev);
