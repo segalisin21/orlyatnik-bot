@@ -14,8 +14,10 @@ import {
   getParticipantsForReminders,
   updateUserFields,
   getParticipantByUserId,
+  getParticipantsForPizhamnikReminder,
 } from './sheets.js';
 import { invalidateCache, STATUS } from './fsm.js';
+import { getKb } from './runtime-config.js';
 import { handleYooKassaWebhook } from './yookassa.js';
 import { InlineKeyboard } from 'grammy';
 
@@ -27,6 +29,19 @@ const REMINDER_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000; // don't remind same user 
 const REMINDER_BY_STATUS: Record<string, string> = {
   NEW: 'Привет! Ты спрашивал про Орлятник — хочешь продолжить? Напиши «хочу забронировать» или задай вопрос.',
   INFO: 'Привет! Ты спрашивал про Орлятник — хочешь продолжить? Напиши «хочу забронировать» или задай вопрос.',
+  FORM_FILLING:
+    'Мы начали заполнять анкету — давай продолжим? Напиши следующий ответ или «подтверждаю», если всё верно.',
+  FORM_CONFIRM:
+    'Мы начали заполнять анкету — давай продолжим? Напиши следующий ответ или «подтверждаю», если всё верно.',
+  WAIT_PAYMENT:
+    'Напоминаем: чтобы подтвердить оплату, пришли чек (фото или документ) сюда в бота.',
+  PAYMENT_SENT:
+    'Мы получили твой чек, менеджер скоро проверит. Если есть вопросы — пиши.',
+};
+
+const REMINDER_PIZHAMNIK_BY_STATUS: Record<string, string> = {
+  NEW: 'Привет! Ты спрашивал про Пижамник — хочешь забронировать место? Напиши «хочу забронировать» или нажми кнопку в боте.',
+  INFO: 'Привет! Ты спрашивал про Пижамник — хочешь забронировать место? Напиши «хочу забронировать» или нажми кнопку в боте.',
   FORM_FILLING:
     'Мы начали заполнять анкету — давай продолжим? Напиши следующий ответ или «подтверждаю», если всё верно.',
   FORM_CONFIRM:
@@ -65,9 +80,12 @@ async function reminderJob(): Promise<void> {
   try {
     const list = await getParticipantsForReminders(REMINDER_INACTIVE_MS, REMINDER_COOLDOWN_MS);
     const delayMs = 80;
+    const reminders = (p: { status: string; event?: string }) =>
+      (p.event === 'pizhamnik' ? REMINDER_PIZHAMNIK_BY_STATUS : REMINDER_BY_STATUS)[p.status] ??
+      (p.event === 'pizhamnik' ? REMINDER_PIZHAMNIK_BY_STATUS.NEW : REMINDER_BY_STATUS.NEW);
     for (const p of list) {
       try {
-        const text = REMINDER_BY_STATUS[p.status] ?? REMINDER_BY_STATUS.NEW;
+        const text = reminders(p);
         await bot.api.sendMessage(p.chat_id, text);
         const now = new Date().toISOString();
         await updateUserFields(Number(p.user_id), { last_reminder_at: now });
@@ -83,10 +101,32 @@ async function reminderJob(): Promise<void> {
   }
 }
 
+async function pizhamnikBalanceReminderJob(): Promise<void> {
+  try {
+    const list = await getParticipantsForPizhamnikReminder();
+    if (list.length === 0) return;
+    const kb = getKb('pizhamnik');
+    const text = kb.REMAINDER_REMINDER_TEXT ?? 'Напоминание: остаток 4500 ₽ за Пижамник нужно внести не позднее 14 марта.';
+    const delayMs = 80;
+    for (const p of list) {
+      try {
+        await bot.api.sendMessage(p.chat_id, text);
+        logger.info('Pizhamnik balance reminder sent', { user_id: p.user_id });
+        await new Promise((r) => setTimeout(r, delayMs));
+      } catch (e) {
+        logger.error('Pizhamnik reminder send failed', { user_id: p.user_id, error: String(e) });
+      }
+    }
+  } catch (e) {
+    logger.error('Pizhamnik balance reminder job error', { error: String(e) });
+  }
+}
+
 function startCron(): void {
   cron.schedule('*/2 * * * *', cronJob, { timezone: 'Europe/Moscow' });
   cron.schedule('0 10 * * *', reminderJob, { timezone: 'Europe/Moscow' }); // daily at 10:00
-  logger.info('Cron: final send every 2 min, reminders daily at 10:00 Moscow');
+  cron.schedule('0 10 11 3 *', pizhamnikBalanceReminderJob, { timezone: 'Europe/Moscow' }); // 11 March 10:00 — 10 days before 21 March
+  logger.info('Cron: final send every 2 min, reminders daily at 10:00, Pizhamnik balance reminder 11 March');
 }
 
 function adminChatIds(): number[] {

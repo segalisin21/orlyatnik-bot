@@ -3,7 +3,7 @@
  * Admin can edit values via bot; no code deploy needed.
  */
 
-import { kb } from './config.js';
+import { kb, kbPizhamnik } from './config.js';
 import { getConfigFromSheet, setConfigInSheet } from './sheets.js';
 import type { FormField } from './fsm.js';
 
@@ -30,6 +30,20 @@ export interface RuntimeKb {
   OBJECTION_NO_COMPANY: string;
   CONSENT_PD_TEXT: string;
   field_prompts: Record<FormField, string>;
+  /** Pizhamnik-only */
+  REMAINDER?: number;
+  PLACES_LIMIT?: number;
+  START_MESSAGE?: string;
+  PROGRAM_TEXT?: string;
+  CONDITIONS_TEXT?: string;
+  PAYMENT_INSTRUCTION?: string;
+  AFTER_RECEIPT_MESSAGE?: string;
+  REFUND_DEADLINE_TEXT?: string;
+  REMAINDER_REMINDER_TEXT?: string;
+  PLACES_FULL_MESSAGE?: string;
+  WAITLIST_CONFIRMED_MESSAGE?: string;
+  CHECKIN_CHECKOUT?: string;
+  EVENT_DATE?: string;
 }
 
 const DEFAULT_FIELD_PROMPTS: Record<FormField, string> = {
@@ -65,8 +79,8 @@ export async function loadSheetConfig(): Promise<void> {
   }
 }
 
-/** Get merged config: sheet overrides defaults. */
-export function getKb(): RuntimeKb {
+/** Get merged config for Orlyatnik: sheet overrides defaults. */
+function getKbOrlyatnik(): RuntimeKb {
   const base = { ...kb } as Record<string, unknown>;
   const fieldPrompts = { ...DEFAULT_FIELD_PROMPTS };
 
@@ -86,9 +100,23 @@ export function getKb(): RuntimeKb {
   } as RuntimeKb;
 }
 
+/** Get config for Pizhamnik (no sheet merge). */
+function getKbPizhamnik(): RuntimeKb {
+  return {
+    ...kbPizhamnik,
+    field_prompts: { ...DEFAULT_FIELD_PROMPTS },
+  } as RuntimeKb;
+}
+
+/** Get merged config by event. orlyatnik (or empty) = sheet overrides; pizhamnik = static Pizhamnik config. */
+export function getKb(event?: string): RuntimeKb {
+  if (event === 'pizhamnik') return getKbPizhamnik();
+  return getKbOrlyatnik();
+}
+
 /** List of available shifts (from AVAILABLE_SHIFTS, comma-separated). */
-export function getShiftsList(): string[] {
-  const raw = getKb().AVAILABLE_SHIFTS || '';
+export function getShiftsList(event?: string): string[] {
+  const raw = getKb(event).AVAILABLE_SHIFTS || '';
   return raw
     .split(',')
     .map((s) => s.trim())

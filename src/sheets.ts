@@ -15,7 +15,7 @@ const ANSWERS_MAX_ROWS = 500;
 const PARTICIPANT_HEADERS = [
   'user_id', 'username', 'chat_id', 'status', 'fio', 'city', 'dob', 'companions',
   'phone', 'comment', 'shift', 'payment_proof_file_id', 'final_sent_at', 'updated_at', 'created_at', 'last_reminder_at',
-  'consent_at', 'yookassa_payment_id',
+  'consent_at', 'yookassa_payment_id', 'event',
 ];
 const LOG_HEADERS = ['timestamp', 'user_id', 'status', 'direction', 'message_type', 'text_preview', 'raw_json'];
 
@@ -41,6 +41,8 @@ export interface Participant {
   consent_at?: string;
   /** YooKassa payment id when paying via link (to avoid duplicate payments). */
   yookassa_payment_id?: string;
+  /** Event slug: 'orlyatnik' | 'pizhamnik' or '' before choice. */
+  event?: string;
   rowIndex?: number;
 }
 
@@ -124,6 +126,7 @@ function rowToParticipant(row: string[], rowIndex: number): Participant {
     last_reminder_at: row[15] ?? '',
     consent_at: row[16] ?? '',
     yookassa_payment_id: row[17] ?? '',
+    event: row[18] ?? '',
     rowIndex: rowIndex + 2,
   };
 }
@@ -148,6 +151,7 @@ function participantToRow(p: Participant): string[] {
     p.last_reminder_at ?? '',
     p.consent_at ?? '',
     p.yookassa_payment_id ?? '',
+    p.event ?? '',
   ];
 }
 
@@ -158,7 +162,7 @@ export async function getParticipantByUserId(userId: number): Promise<Participan
     const sheets = getSheets();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${PARTICIPANTS_SHEET}'!A2:R`,
+      range: `'${PARTICIPANTS_SHEET}'!A2:S`,
     });
     const rows = (res.data.values ?? []) as string[][];
     for (let i = 0; i < rows.length; i++) {
@@ -181,7 +185,7 @@ export async function getOrCreateUser(
     const sheets = getSheets();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${PARTICIPANTS_SHEET}'!A2:R`,
+      range: `'${PARTICIPANTS_SHEET}'!A2:S`,
     });
     const rows = (res.data.values ?? []) as string[][];
     for (let i = 0; i < rows.length; i++) {
@@ -209,10 +213,11 @@ export async function getOrCreateUser(
       last_reminder_at: '',
       consent_at: '',
       yookassa_payment_id: '',
+      event: '',
     };
     await sheets.spreadsheets.values.append({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${PARTICIPANTS_SHEET}'!A:R`,
+      range: `'${PARTICIPANTS_SHEET}'!A:S`,
       valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values: [participantToRow(newRow)] },
@@ -231,7 +236,7 @@ export async function updateUserFields(
     const sheets = getSheets();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${PARTICIPANTS_SHEET}'!A2:R`,
+      range: `'${PARTICIPANTS_SHEET}'!A2:S`,
     });
     const rows = (res.data.values ?? []) as string[][];
     let rowIndex = -1;
@@ -250,7 +255,7 @@ export async function updateUserFields(
       ...patch,
       updated_at: new Date().toISOString(),
     };
-    const range = `'${PARTICIPANTS_SHEET}'!A${rowIndex + 2}:R${rowIndex + 2}`;
+    const range = `'${PARTICIPANTS_SHEET}'!A${rowIndex + 2}:S${rowIndex + 2}`;
     await sheets.spreadsheets.values.update({
       spreadsheetId: env.GOOGLE_SHEET_ID,
       range,
@@ -290,7 +295,7 @@ export async function getParticipantsPendingFinalSend(): Promise<Participant[]> 
     const sheets = getSheets();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${PARTICIPANTS_SHEET}'!A2:R`,
+      range: `'${PARTICIPANTS_SHEET}'!A2:S`,
     });
     const rows = (res.data.values ?? []) as string[][];
     const out: Participant[] = [];
@@ -310,7 +315,7 @@ export async function getParticipantsForBroadcast(statusFilter: 'all' | 'CONFIRM
     const sheets = getSheets();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${PARTICIPANTS_SHEET}'!A2:R`,
+      range: `'${PARTICIPANTS_SHEET}'!A2:S`,
     });
     const rows = (res.data.values ?? []) as string[][];
     const out: Participant[] = [];
@@ -331,6 +336,24 @@ export async function getParticipantsForBroadcast(statusFilter: 'all' | 'CONFIRM
   });
 }
 
+/** Count participants with status CONFIRMED and given event (for places limit, e.g. pizhamnik). */
+export async function getConfirmedCount(event: string): Promise<number> {
+  return withRetry(async () => {
+    const sheets = getSheets();
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: env.GOOGLE_SHEET_ID,
+      range: `'${PARTICIPANTS_SHEET}'!A2:S`,
+    });
+    const rows = (res.data.values ?? []) as string[][];
+    let count = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const p = rowToParticipant(rows[i], i);
+      if (p.status === 'CONFIRMED' && (p.event ?? '') === event) count++;
+    }
+    return count;
+  });
+}
+
 const REMINDER_STATUSES = ['NEW', 'INFO', 'FORM_FILLING', 'FORM_CONFIRM', 'WAIT_PAYMENT', 'PAYMENT_SENT'] as const;
 
 /** Participants who went inactive: have chat_id, are on a step we remind for, updated_at older than inactiveMs, last reminder (if any) older than cooldownMs. */
@@ -342,7 +365,7 @@ export async function getParticipantsForReminders(
     const sheets = getSheets();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${PARTICIPANTS_SHEET}'!A2:R`,
+      range: `'${PARTICIPANTS_SHEET}'!A2:S`,
     });
     const rows = (res.data.values ?? []) as string[][];
     const now = Date.now();
@@ -354,6 +377,26 @@ export async function getParticipantsForReminders(
       if (now - updatedAt < inactiveMs) continue;
       const lastReminder = p.last_reminder_at ? new Date(p.last_reminder_at).getTime() : 0;
       if (lastReminder > 0 && now - lastReminder < cooldownMs) continue;
+      out.push(p);
+    }
+    return out;
+  });
+}
+
+/** Pizhamnik: participants with WAIT_PAYMENT or PAYMENT_SENT for "10 days before" balance reminder (remainder 4500). */
+export async function getParticipantsForPizhamnikReminder(): Promise<Participant[]> {
+  return withRetry(async () => {
+    const sheets = getSheets();
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: env.GOOGLE_SHEET_ID,
+      range: `'${PARTICIPANTS_SHEET}'!A2:S`,
+    });
+    const rows = (res.data.values ?? []) as string[][];
+    const out: Participant[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      const p = rowToParticipant(rows[i], i);
+      if ((p.event ?? '') !== 'pizhamnik' || !p.chat_id?.trim()) continue;
+      if (p.status !== 'WAIT_PAYMENT' && p.status !== 'PAYMENT_SENT') continue;
       out.push(p);
     }
     return out;

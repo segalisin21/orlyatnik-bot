@@ -28,23 +28,37 @@ import {
   getAnswerFromStorage,
   saveAnswer,
   normalizeQuestion,
+  getConfirmedCount,
 } from './sheets.js';
 import { invalidateCache } from './fsm.js';
 import type { Participant } from './sheets.js';
 import { createPayment, isYooKassaEnabled } from './yookassa.js';
 
-function getFieldPrompts(): Record<FormField, string> {
-  return getKb().field_prompts;
+function getFieldPrompts(event?: string): Record<FormField, string> {
+  return getKb(event).field_prompts;
 }
 
 /** Inline keyboard: one button per shift (shift_0, shift_1, ...) + "По умолчанию" (shift_default). */
-function getShiftKeyboard(): InlineKeyboard {
-  const shifts = getShiftsList();
+function getShiftKeyboard(event?: string): InlineKeyboard {
+  const shifts = getShiftsList(event);
   const kb = new InlineKeyboard();
   shifts.forEach((_, i) => kb.text(shifts[i], `shift_${i}`));
   if (shifts.length > 0) kb.row();
   kb.text('По умолчанию', 'shift_default');
   return kb;
+}
+
+function eventChoiceKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('Орлятник 21+', 'event_orlyatnik')
+    .text('Пижамник', 'event_pizhamnik');
+}
+
+function pizhamnikStartKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('Узнать программу', 'program')
+    .text('Условия и стоимость', 'conditions').row()
+    .text('Забронировать место', 'book_place');
 }
 
 /** Фразы, по которым переключается статус. Бот должен явно их подсказывать. */
@@ -149,6 +163,126 @@ export function createBot(): Bot {
       const fromId = ctx.from?.id ?? ctx.callbackQuery.from?.id;
       logger.info('Callback received', { data, fromId });
 
+      if (data === 'event_orlyatnik' || data === 'event_pizhamnik') {
+        const uid = ctx.callbackQuery.from?.id;
+        const chatId = ctx.callbackQuery.message?.chat?.id;
+        const username = ctx.callbackQuery.from?.username ?? '';
+        if (!uid || !chatId) {
+          await safeAnswer();
+          return;
+        }
+        const event = data === 'event_orlyatnik' ? 'orlyatnik' : 'pizhamnik';
+        try {
+          await patchParticipant(uid, { event });
+        } catch (e) {
+          logger.error('patchParticipant event failed', { userId: uid, error: String(e) });
+          await safeAnswer('Ошибка, попробуй ещё раз.');
+          return;
+        }
+        await safeAnswer('Принято');
+        if (event === 'pizhamnik') {
+          const kb = getKb('pizhamnik');
+          await ctx.reply(kb.START_MESSAGE ?? '', { reply_markup: pizhamnikStartKeyboard() });
+        } else {
+          await ctx.reply('Добро пожаловать! Напиши, что хочешь узнать — даты, цены, условия или «хочу забронировать».');
+        }
+        return;
+      }
+
+      if (data === 'program' || data === 'conditions') {
+        const uid = ctx.callbackQuery.from?.id;
+        const chatId = ctx.callbackQuery.message?.chat?.id;
+        const username = ctx.callbackQuery.from?.username ?? '';
+        if (!uid || !chatId) {
+          await safeAnswer();
+          return;
+        }
+        let p: Participant;
+        try {
+          p = await getParticipant(uid, username, chatId);
+        } catch (e) {
+          await safeAnswer();
+          return;
+        }
+        if ((p.event ?? '') !== 'pizhamnik') {
+          await safeAnswer();
+          return;
+        }
+        const kb = getKb('pizhamnik');
+        const text = data === 'program' ? (kb.PROGRAM_TEXT ?? '') : (kb.CONDITIONS_TEXT ?? '');
+        await ctx.reply(text, { reply_markup: pizhamnikStartKeyboard() });
+        await safeAnswer();
+        return;
+      }
+
+      if (data === 'book_place') {
+        const uid = ctx.callbackQuery.from?.id;
+        const chatId = ctx.callbackQuery.message?.chat?.id;
+        const username = ctx.callbackQuery.from?.username ?? '';
+        if (!uid || !chatId) {
+          await safeAnswer();
+          return;
+        }
+        let p: Participant;
+        try {
+          p = await getParticipant(uid, username, chatId);
+        } catch (e) {
+          await safeAnswer('Ошибка, попробуй ещё раз.');
+          return;
+        }
+        if ((p.event ?? '') === 'pizhamnik') {
+          const kb = getKb('pizhamnik');
+          const limit = kb.PLACES_LIMIT ?? 21;
+          const count = await getConfirmedCount('pizhamnik');
+          if (count >= limit) {
+            const waitlistKb = new InlineKeyboard().text('Записаться в лист ожидания', 'waitlist_yes');
+            await ctx.reply(kb.PLACES_FULL_MESSAGE ?? '', { reply_markup: waitlistKb });
+            await safeAnswer();
+            return;
+          }
+        }
+        if (!p.consent_at?.trim()) {
+          const consentText = getKb(p.event).CONSENT_PD_TEXT;
+          const consentKeyboard = new InlineKeyboard().text('Согласен на обработку персональных данных', 'consent_ok');
+          await ctx.reply(consentText, { reply_markup: consentKeyboard });
+          await safeAnswer('Принято');
+          return;
+        }
+        await setParticipantStatus(uid, STATUS.FORM_FILLING);
+        p = await getParticipant(uid, username, chatId);
+        const next = getNextEmptyField(p);
+        const prompt = next ? getFieldPrompts(p.event)[next] : '';
+        await ctx.reply(prompt || PHRASE_HINT_CONFIRM, next === 'shift' ? { reply_markup: getShiftKeyboard(p.event) } : {});
+        await safeAnswer('Принято');
+        return;
+      }
+
+      if (data === 'waitlist_yes') {
+        const uid = ctx.callbackQuery.from?.id;
+        const chatId = ctx.callbackQuery.message?.chat?.id;
+        const username = ctx.callbackQuery.from?.username ?? '';
+        if (!uid || !chatId) {
+          await safeAnswer();
+          return;
+        }
+        let p: Participant;
+        try {
+          p = await getParticipant(uid, username, chatId);
+        } catch (e) {
+          await safeAnswer('Ошибка.');
+          return;
+        }
+        if ((p.event ?? '') !== 'pizhamnik' || (p.status !== STATUS.NEW && p.status !== STATUS.INFO)) {
+          await safeAnswer();
+          return;
+        }
+        await setParticipantStatus(uid, STATUS.WAITLIST);
+        const kb = getKb('pizhamnik');
+        await ctx.reply(kb.WAITLIST_CONFIRMED_MESSAGE ?? 'Записала в лист ожидания. Сообщим, если место освободится.');
+        await safeAnswer('Принято');
+        return;
+      }
+
       if (data === 'consent_ok') {
         const uid = ctx.callbackQuery.from?.id;
         const chatId = ctx.callbackQuery.message?.chat?.id;
@@ -172,15 +306,27 @@ export function createBot(): Bot {
         await setParticipantStatus(uid, STATUS.FORM_FILLING);
         p = await getParticipant(uid, username, chatId);
         const next = getNextEmptyField(p);
-        const prompt = next ? getFieldPrompts()[next] : '';
-        await ctx.reply(prompt || PHRASE_HINT_CONFIRM, next === 'shift' ? { reply_markup: getShiftKeyboard() } : {});
+        const prompt = next ? getFieldPrompts(p.event)[next] : '';
+        await ctx.reply(prompt || PHRASE_HINT_CONFIRM, next === 'shift' ? { reply_markup: getShiftKeyboard(p.event) } : {});
         await safeAnswer('Принято');
         return;
       }
 
       if (data === 'change_shift') {
         await safeAnswer();
-        await ctx.reply('Выбери смену:', { reply_markup: getShiftKeyboard() });
+        const uid = ctx.callbackQuery.from?.id;
+        const chatId = ctx.callbackQuery.message?.chat?.id;
+        const username = ctx.callbackQuery.from?.username ?? '';
+        let event: string | undefined;
+        if (uid && chatId) {
+          try {
+            const p = await getParticipant(uid, username, chatId);
+            event = p.event;
+          } catch {
+            // fallback to default
+          }
+        }
+        await ctx.reply('Выбери смену:', { reply_markup: getShiftKeyboard(event) });
         return;
       }
 
@@ -201,9 +347,11 @@ export function createBot(): Bot {
           return;
         }
         const payload = data.replace('shift_', '');
-        const shifts = getShiftsList();
+        const ev = p.event;
+        const shifts = getShiftsList(ev);
+        const kbEv = getKb(ev);
         const chosenShift =
-          payload === 'default' ? getKb().DEFAULT_SHIFT : shifts[Number(payload)] ?? getKb().DEFAULT_SHIFT;
+          payload === 'default' ? kbEv.DEFAULT_SHIFT : shifts[Number(payload)] ?? kbEv.DEFAULT_SHIFT;
         p = await patchParticipant(uid, { shift: chosenShift });
         await safeAnswer('Принято');
         const formStatuses = [STATUS.FORM_FILLING, STATUS.FORM_CONFIRM];
@@ -215,10 +363,10 @@ export function createBot(): Bot {
             const fullAnketa = formatAnketa(p);
             await ctx.reply(`Проверь анкету:\n\n${fullAnketa}\n\n${PHRASE_HINT_CONFIRM}`);
           } else {
-            const prompt = getFieldPrompts()[next];
+            const prompt = getFieldPrompts(p.event)[next];
             await ctx.reply(
               prompt,
-              next === 'shift' ? { reply_markup: getShiftKeyboard() } : {}
+              next === 'shift' ? { reply_markup: getShiftKeyboard(p.event) } : {}
             );
           }
         } else {
@@ -414,15 +562,31 @@ export function createBot(): Bot {
     }
     await logOut(String(userId), p.status, 'IN', 'text', text.slice(0, 200));
 
+    if (text === '/start') {
+      const ev = (p.event ?? '').trim();
+      if (!ev) {
+        await ctx.reply('Выберите мероприятие:', { reply_markup: eventChoiceKeyboard() });
+        return;
+      }
+      if (ev === 'pizhamnik') {
+        const kb = getKb('pizhamnik');
+        await ctx.reply(kb.START_MESSAGE ?? '', { reply_markup: pizhamnikStartKeyboard() });
+        return;
+      }
+      await ctx.reply('Добро пожаловать! Напиши, что хочешь узнать — даты, цены, условия или «хочу забронировать».');
+      return;
+    }
+
     const formStatuses: string[] = [STATUS.FORM_FILLING, STATUS.FORM_CONFIRM];
     if (formStatuses.includes(p.status)) {
       if (p.status === STATUS.FORM_CONFIRM && PHRASE_CONFIRM_ANKETA.test(text)) {
         const again = formatAnketa(p);
-        const deposit = getKb().DEPOSIT;
+        const kbEv = getKb(p.event || 'orlyatnik');
+        const deposit = kbEv.DEPOSIT;
         let paymentLink: string | null = null;
         let yookassaPaymentId: string | null = null;
         if (isYooKassaEnabled()) {
-          const payment = await createPayment(deposit, userId, `Задаток Орлятник 21+, user ${userId}`);
+          const payment = await createPayment(deposit, userId, `Задаток ${p.event === 'pizhamnik' ? 'Пижамник' : 'Орлятник 21+'}, user ${userId}`);
           if (payment) {
             paymentLink = payment.confirmation_url;
             yookassaPaymentId = payment.id;
@@ -432,24 +596,25 @@ export function createBot(): Bot {
           ...(yookassaPaymentId ? { yookassa_payment_id: yookassaPaymentId } : {}),
         });
         const paymentBlock = paymentLink
-          ? `Оплатить задаток (${deposit} ₽) по ссылке:\n${paymentLink}\n\nИли перевести на Сбер:\n${getKb().PAYMENT_SBER}`
-          : `Реквизиты для задатка:\n\n${getKb().PAYMENT_SBER}`;
+          ? `Оплатить задаток (${deposit} ₽) по ссылке:\n${paymentLink}\n\nИли перевести на Сбер:\n${kbEv.PAYMENT_SBER}`
+          : `Реквизиты для задатка:\n\n${kbEv.PAYMENT_SBER}`;
         await ctx.reply(
-          `Отлично!\n\n${paymentBlock}\n\nПовторяю анкету:\n${again}\n\n${getKb().AFTER_PAYMENT_INSTRUCTION}\n\n${PHRASE_HINT_RECEIPT}`
+          `Отлично!\n\n${paymentBlock}\n\nПовторяю анкету:\n${again}\n\n${kbEv.AFTER_PAYMENT_INSTRUCTION}\n\n${PHRASE_HINT_RECEIPT}`
         );
         return;
       }
-      const out = await getFormModeReply(text, p.status, p);
+      const out = await getFormModeReply(text, p.status, p, p.event || 'orlyatnik');
       const patch = out.form_patch || {};
       if (Object.keys(patch).length > 0) {
         const updates: Partial<Participant> = {};
+        const kbEv = getKb(p.event || 'orlyatnik');
         if (patch.fio !== undefined) updates.fio = patch.fio.trim();
         if (patch.city !== undefined) updates.city = patch.city.trim();
         if (patch.dob !== undefined) updates.dob = patch.dob.trim();
         if (patch.companions !== undefined) updates.companions = patch.companions.trim();
         if (patch.phone !== undefined) updates.phone = normalizePhone(patch.phone);
         if (patch.comment !== undefined) updates.comment = patch.comment.trim();
-        if (patch.shift !== undefined) updates.shift = patch.shift.trim() || getKb().DEFAULT_SHIFT;
+        if (patch.shift !== undefined) updates.shift = patch.shift.trim() || kbEv.DEFAULT_SHIFT;
         if (Object.keys(updates).length > 0) {
           p = await patchParticipant(userId, updates);
         }
@@ -468,8 +633,8 @@ export function createBot(): Bot {
         await ctx.reply(out.reply_text + (out.reply_text.includes('анкет') ? '' : '\n\nТвоя анкета:\n' + fullAnketa + '\n\n' + PHRASE_HINT_CONFIRM));
       } else {
         const next = getNextEmptyField(p);
-        const prompt = next ? getFieldPrompts()[next] : '';
-        const opts = next === 'shift' ? { reply_markup: getShiftKeyboard() } : {};
+        const prompt = next ? getFieldPrompts(p.event)[next] : '';
+        const opts = next === 'shift' ? { reply_markup: getShiftKeyboard(p.event) } : {};
         await ctx.reply(out.reply_text + (prompt ? '\n\n' + prompt : ''), opts);
       }
       await logOut(String(userId), p.status, 'OUT', 'text', (out.reply_text || '').slice(0, 200));
@@ -498,14 +663,26 @@ export function createBot(): Bot {
     }
 
     if (/какие смены|выбрать смену|на какую смену|какие даты|выбери смену/i.test(text)) {
-      await ctx.reply('Выбери смену:', { reply_markup: getShiftKeyboard() });
+      await ctx.reply('Выбери смену:', { reply_markup: getShiftKeyboard(p.event) });
       await logOut(String(userId), p.status, 'OUT', 'text', 'shift choice');
       return;
     }
 
-    if (PHRASE_BOOK.test(text) && p.status !== STATUS.CONFIRMED) {
+    if (PHRASE_BOOK.test(text) && p.status !== STATUS.CONFIRMED && p.status !== STATUS.WAITLIST) {
+      const ev = p.event || 'orlyatnik';
+      if (ev === 'pizhamnik') {
+        const kb = getKb('pizhamnik');
+        const limit = kb.PLACES_LIMIT ?? 21;
+        const count = await getConfirmedCount('pizhamnik');
+        if (count >= limit) {
+          const waitlistKb = new InlineKeyboard().text('Записаться в лист ожидания', 'waitlist_yes');
+          await ctx.reply(kb.PLACES_FULL_MESSAGE ?? '', { reply_markup: waitlistKb });
+          await logOut(String(userId), p.status, 'OUT', 'text', 'places full');
+          return;
+        }
+      }
       if (!p.consent_at?.trim()) {
-        const consentText = getKb().CONSENT_PD_TEXT;
+        const consentText = getKb(ev).CONSENT_PD_TEXT;
         const consentKeyboard = new InlineKeyboard().text('Согласен на обработку персональных данных', 'consent_ok');
         await ctx.reply(consentText, { reply_markup: consentKeyboard });
         await logOut(String(userId), p.status, 'OUT', 'text', 'consent request');
@@ -514,31 +691,43 @@ export function createBot(): Bot {
       await setParticipantStatus(userId, STATUS.FORM_FILLING);
       p = await getParticipant(userId, username, chatId);
       const next = getNextEmptyField(p);
-      const prompt = next ? getFieldPrompts()[next] : '';
-      await ctx.reply(prompt || PHRASE_HINT_CONFIRM, next === 'shift' ? { reply_markup: getShiftKeyboard() } : {});
+      const prompt = next ? getFieldPrompts(p.event)[next] : '';
+      await ctx.reply(prompt || PHRASE_HINT_CONFIRM, next === 'shift' ? { reply_markup: getShiftKeyboard(p.event) } : {});
       await logOut(String(userId), STATUS.FORM_FILLING, 'OUT', 'text', 'first question');
       return;
     }
 
     if ((p.status === STATUS.NEW || p.status === STATUS.INFO) && !p.consent_at?.trim() && PHRASE_CONSENT.test(text)) {
+      const ev = p.event || 'orlyatnik';
+      if (ev === 'pizhamnik') {
+        const kb = getKb('pizhamnik');
+        const limit = kb.PLACES_LIMIT ?? 21;
+        const count = await getConfirmedCount('pizhamnik');
+        if (count >= limit) {
+          const waitlistKb = new InlineKeyboard().text('Записаться в лист ожидания', 'waitlist_yes');
+          await ctx.reply(kb.PLACES_FULL_MESSAGE ?? '', { reply_markup: waitlistKb });
+          return;
+        }
+      }
       const now = new Date().toISOString();
       await patchParticipant(userId, { consent_at: now });
       await setParticipantStatus(userId, STATUS.FORM_FILLING);
       p = await getParticipant(userId, username, chatId);
       const next = getNextEmptyField(p);
-      const prompt = next ? getFieldPrompts()[next] : '';
-      await ctx.reply(prompt || PHRASE_HINT_CONFIRM, next === 'shift' ? { reply_markup: getShiftKeyboard() } : {});
+      const prompt = next ? getFieldPrompts(p.event)[next] : '';
+      await ctx.reply(prompt || PHRASE_HINT_CONFIRM, next === 'shift' ? { reply_markup: getShiftKeyboard(p.event) } : {});
       await logOut(String(userId), STATUS.FORM_FILLING, 'OUT', 'text', 'consent then first question');
       return;
     }
 
     const normQuestion = normalizeQuestion(text);
     const stored = normQuestion ? await getAnswerFromStorage(normQuestion) : null;
+    const ev = p.event || 'orlyatnik';
     let reply: string;
     if (stored) {
       reply = await reviveAnswer(stored);
     } else {
-      reply = await getSalesReply(text);
+      reply = await getSalesReply(text, ev);
       if (normQuestion) await saveAnswer(text, reply);
     }
     await ctx.reply(reply);
@@ -581,14 +770,16 @@ export function createBot(): Bot {
     await logOut(String(userId), p.status, 'IN', 'voice_transcribed', text.slice(0, 200));
 
     const formStatusesVoice: string[] = [STATUS.FORM_FILLING, STATUS.FORM_CONFIRM];
+    const ev = p.event || 'orlyatnik';
     if (formStatusesVoice.includes(p.status)) {
       if (p.status === STATUS.FORM_CONFIRM && PHRASE_CONFIRM_ANKETA.test(text)) {
         const again = formatAnketa(p);
-        const deposit = getKb().DEPOSIT;
+        const kbEv = getKb(ev);
+        const deposit = kbEv.DEPOSIT;
         let paymentLink: string | null = null;
         let yookassaPaymentId: string | null = null;
         if (isYooKassaEnabled()) {
-          const payment = await createPayment(deposit, userId, `Задаток Орлятник 21+, user ${userId}`);
+          const payment = await createPayment(deposit, userId, `Задаток ${p.event === 'pizhamnik' ? 'Пижамник' : 'Орлятник 21+'}, user ${userId}`);
           if (payment) {
             paymentLink = payment.confirmation_url;
             yookassaPaymentId = payment.id;
@@ -598,24 +789,25 @@ export function createBot(): Bot {
           ...(yookassaPaymentId ? { yookassa_payment_id: yookassaPaymentId } : {}),
         });
         const paymentBlock = paymentLink
-          ? `Оплатить задаток (${deposit} ₽) по ссылке:\n${paymentLink}\n\nИли перевести на Сбер:\n${getKb().PAYMENT_SBER}`
-          : `Реквизиты для задатка:\n\n${getKb().PAYMENT_SBER}`;
+          ? `Оплатить задаток (${deposit} ₽) по ссылке:\n${paymentLink}\n\nИли перевести на Сбер:\n${kbEv.PAYMENT_SBER}`
+          : `Реквизиты для задатка:\n\n${kbEv.PAYMENT_SBER}`;
         await ctx.reply(
-          `Отлично!\n\n${paymentBlock}\n\nПовторяю анкету:\n${again}\n\n${getKb().AFTER_PAYMENT_INSTRUCTION}\n\n${PHRASE_HINT_RECEIPT}`
+          `Отлично!\n\n${paymentBlock}\n\nПовторяю анкету:\n${again}\n\n${kbEv.AFTER_PAYMENT_INSTRUCTION}\n\n${PHRASE_HINT_RECEIPT}`
         );
         return;
       }
-      const out = await getFormModeReply(text, p.status, p);
+      const out = await getFormModeReply(text, p.status, p, ev);
       const patch = out.form_patch || {};
       if (Object.keys(patch).length > 0) {
         const updates: Partial<Participant> = {};
+        const kbEv = getKb(ev);
         if (patch.fio !== undefined) updates.fio = patch.fio.trim();
         if (patch.city !== undefined) updates.city = patch.city.trim();
         if (patch.dob !== undefined) updates.dob = patch.dob.trim();
         if (patch.companions !== undefined) updates.companions = patch.companions.trim();
         if (patch.phone !== undefined) updates.phone = normalizePhone(patch.phone);
         if (patch.comment !== undefined) updates.comment = patch.comment.trim();
-        if (patch.shift !== undefined) updates.shift = patch.shift.trim() || getKb().DEFAULT_SHIFT;
+        if (patch.shift !== undefined) updates.shift = patch.shift.trim() || kbEv.DEFAULT_SHIFT;
         if (Object.keys(updates).length > 0) {
           p = await patchParticipant(userId, updates);
         }
@@ -631,8 +823,8 @@ export function createBot(): Bot {
         await ctx.reply(out.reply_text + '\n\nТвоя анкета:\n' + fullAnketa + '\n\n' + PHRASE_HINT_CONFIRM);
       } else {
         const next = getNextEmptyField(p);
-        const prompt = next ? getFieldPrompts()[next] : '';
-        const opts = next === 'shift' ? { reply_markup: getShiftKeyboard() } : {};
+        const prompt = next ? getFieldPrompts(p.event)[next] : '';
+        const opts = next === 'shift' ? { reply_markup: getShiftKeyboard(p.event) } : {};
         await ctx.reply(out.reply_text + (prompt ? '\n\n' + prompt : ''), opts);
       }
       return;
@@ -658,18 +850,19 @@ export function createBot(): Bot {
     }
 
     if (/какие смены|выбрать смену|на какую смену|какие даты|выбери смену/i.test(text)) {
-      await ctx.reply('Выбери смену:', { reply_markup: getShiftKeyboard() });
+      await ctx.reply('Выбери смену:', { reply_markup: getShiftKeyboard(p.event) });
       await logOut(String(userId), p.status, 'OUT', 'text', 'shift choice');
       return;
     }
 
     const normQuestionVoice = normalizeQuestion(text);
     const storedVoice = normQuestionVoice ? await getAnswerFromStorage(normQuestionVoice) : null;
+    const evVoice = p.event || 'orlyatnik';
     let replyVoice: string;
     if (storedVoice) {
       replyVoice = await reviveAnswer(storedVoice);
     } else {
-      replyVoice = await getSalesReply(text);
+      replyVoice = await getSalesReply(text, evVoice);
       if (normQuestionVoice) await saveAnswer(text, replyVoice);
     }
     await ctx.reply(replyVoice);
@@ -678,12 +871,12 @@ export function createBot(): Bot {
     if (p.status === STATUS.NEW) {
       await setParticipantStatus(userId, STATUS.INFO);
     }
-    if (PHRASE_BOOK.test(text) && p.status !== STATUS.CONFIRMED) {
+    if (PHRASE_BOOK.test(text) && p.status !== STATUS.CONFIRMED && p.status !== STATUS.WAITLIST) {
       await setParticipantStatus(userId, STATUS.FORM_FILLING);
       p = await getParticipant(userId, username, chatId);
       const next = getNextEmptyField(p);
-      const prompt = next ? getFieldPrompts()[next] : '';
-      await ctx.reply(prompt || PHRASE_HINT_CONFIRM, next === 'shift' ? { reply_markup: getShiftKeyboard() } : {});
+      const prompt = next ? getFieldPrompts(p.event)[next] : '';
+      await ctx.reply(prompt || PHRASE_HINT_CONFIRM, next === 'shift' ? { reply_markup: getShiftKeyboard(p.event) } : {});
     }
   });
 
@@ -720,6 +913,10 @@ export function createBot(): Bot {
     const adminText = `Чек (фото) от участника.\n@${username} (id: ${userId})\n\n${anketa}\n\nНажми кнопку ниже или измени статус в таблице на CONFIRMED.`;
     await sendToAdmin(adminText, { photo: fileId, confirmUserId: userId });
     await ctx.reply('Принял, ждём подтверждения. Как только менеджер подтвердит — пришлю ссылку на чат и контакт.');
+    if (updated.event === 'pizhamnik') {
+      const kb = getKb('pizhamnik');
+      if (kb.AFTER_RECEIPT_MESSAGE) await ctx.reply(kb.AFTER_RECEIPT_MESSAGE);
+    }
     await logOut(String(userId), STATUS.PAYMENT_SENT, 'OUT', 'text', 'payment received');
   });
 
@@ -756,6 +953,10 @@ export function createBot(): Bot {
     const adminText = `Чек (документ) от участника.\n@${username} (id: ${userId})\n\n${anketa}\n\nНажми кнопку ниже или измени статус в таблице на CONFIRMED.`;
     await sendToAdmin(adminText, { document: fileId, confirmUserId: userId });
     await ctx.reply('Принял, ждём подтверждения. Как только менеджер подтвердит — пришлю ссылку на чат и контакт.');
+    if (updated.event === 'pizhamnik') {
+      const kb = getKb('pizhamnik');
+      if (kb.AFTER_RECEIPT_MESSAGE) await ctx.reply(kb.AFTER_RECEIPT_MESSAGE);
+    }
     await logOut(String(userId), STATUS.PAYMENT_SENT, 'OUT', 'text', 'payment received');
   });
 
