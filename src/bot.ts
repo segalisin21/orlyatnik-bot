@@ -58,7 +58,8 @@ function eventStartKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .text('Узнать программу', 'program')
     .text('Условия и стоимость', 'conditions').row()
-    .text('Забронировать место', 'book_place');
+    .text('Забронировать место', 'book_place').row()
+    .text('Сменить мероприятие', 'event_change');
 }
 
 /** Кнопки «Да» / «Подтверждаю» для перехода к оплате после проверки анкеты. */
@@ -345,6 +346,15 @@ export function createBot(): Bot {
         return;
       }
 
+      if (data === 'event_change') {
+        await safeAnswer();
+        await ctx.reply(
+          'Выбери мероприятие — у каждого свои даты, описание и стоимость:',
+          { reply_markup: eventChoiceKeyboard() }
+        );
+        return;
+      }
+
       if (data === 'program' || data === 'conditions') {
         const uid = ctx.callbackQuery.from?.id;
         const chatId = ctx.callbackQuery.message?.chat?.id;
@@ -363,7 +373,7 @@ export function createBot(): Bot {
         const ev = p.event ?? 'orlyatnik';
         const kb = getKb(ev);
         const text = data === 'program' ? (kb.PROGRAM_TEXT ?? '') : (kb.CONDITIONS_TEXT ?? '');
-        const menuKb = ev === 'pizhamnik' ? eventStartKeyboard() : eventStartKeyboard();
+        const menuKb = eventStartKeyboard();
         if (text) await ctx.reply(text, { reply_markup: menuKb });
         await safeAnswer();
         return;
@@ -838,17 +848,12 @@ export function createBot(): Bot {
     }
     logOut(String(userId), p.status, 'IN', 'text', text.slice(0, 200));
 
+    // /start всегда показывает приветствие и выбор мероприятия (не переходим в меню события по сохранённому event)
     if (text === '/start' || text.startsWith('/start ')) {
-      const ev = (p.event ?? '').trim();
-      if (!ev) {
-        await ctx.reply(
-          'Привет! 👋 Рады видеть тебя здесь. Выбери мероприятие — расскажем программу, условия и поможем забронировать место.',
-          { reply_markup: eventChoiceKeyboard() }
-        );
-        return;
-      }
-      const kb = getKb(ev === 'pizhamnik' ? 'pizhamnik' : 'orlyatnik');
-      await ctx.reply(kb.START_MESSAGE ?? 'Добро пожаловать! Выбери кнопку или напиши вопрос в чат.', { reply_markup: eventStartKeyboard() });
+      await ctx.reply(
+        'Привет! 👋 Рады видеть тебя здесь. Выбери мероприятие — расскажем программу, условия и поможем забронировать место.',
+        { reply_markup: eventChoiceKeyboard() }
+      );
       return;
     }
 
