@@ -8,6 +8,7 @@ import { getConfigFromSheet, setConfigInSheet } from './sheets.js';
 import type { FormField } from './fsm.js';
 
 let sheetCache: Record<string, string> = {};
+let sheetCachePizhamnik: Record<string, string> = {};
 
 export interface RuntimeKb {
   REGISTRATION_CLOSED: boolean;
@@ -55,14 +56,14 @@ const DEFAULT_FIELD_PROMPTS: Record<FormField, string> = {
   shift: 'Какая смена? (если не знаешь — напиши «по умолчанию»)',
 };
 
-const NUM_KEYS = new Set(['PRICE', 'DEPOSIT']);
+const NUM_KEYS = new Set(['PRICE', 'DEPOSIT', 'REMAINDER', 'PLACES_LIMIT']);
 const BOOL_KEYS = new Set(['REGISTRATION_CLOSED']);
 const FIELD_PROMPT_PREFIX = 'FIELD_PROMPT_';
 
-function parseValue(key: string, raw: string): string | number | boolean {
+function parseValue(key: string, raw: string, base: Record<string, unknown> = kb as Record<string, unknown>): string | number | boolean {
   if (NUM_KEYS.has(key)) {
     const n = Number(raw.replace(/\s/g, ''));
-    return Number.isFinite(n) ? n : (kb as Record<string, unknown>)[key] as number;
+    return Number.isFinite(n) ? n : (base[key] as number) ?? 0;
   }
   if (BOOL_KEYS.has(key)) {
     return /^(1|true|да|yes)$/i.test(raw.trim());
@@ -70,12 +71,17 @@ function parseValue(key: string, raw: string): string | number | boolean {
   return raw;
 }
 
-/** Load config from Google Sheet "Настройки". Call at startup. */
+/** Load config from Google Sheets "Настройки" and "Настройки Пижамник". Call at startup. */
 export async function loadSheetConfig(): Promise<void> {
   try {
     sheetCache = await getConfigFromSheet();
   } catch {
     sheetCache = {};
+  }
+  try {
+    sheetCachePizhamnik = await getConfigFromSheet('pizhamnik');
+  } catch {
+    sheetCachePizhamnik = {};
   }
 }
 
@@ -90,7 +96,7 @@ function getKbOrlyatnik(): RuntimeKb {
       const field = key.slice(FIELD_PROMPT_PREFIX.length) as FormField;
       if (field in fieldPrompts) fieldPrompts[field] = raw.trim();
     } else if (key in base) {
-      base[key] = parseValue(key, raw);
+      base[key] = parseValue(key, raw, base);
     }
   }
 
@@ -100,11 +106,24 @@ function getKbOrlyatnik(): RuntimeKb {
   } as RuntimeKb;
 }
 
-/** Get config for Pizhamnik (no sheet merge). */
+/** Get merged config for Pizhamnik: sheet "Настройки Пижамник" overrides defaults. */
 function getKbPizhamnik(): RuntimeKb {
+  const base = { ...kbPizhamnik } as Record<string, unknown>;
+  const fieldPrompts = { ...DEFAULT_FIELD_PROMPTS };
+
+  for (const [key, raw] of Object.entries(sheetCachePizhamnik)) {
+    if (!raw || raw.trim() === '') continue;
+    if (key.startsWith(FIELD_PROMPT_PREFIX)) {
+      const field = key.slice(FIELD_PROMPT_PREFIX.length) as FormField;
+      if (field in fieldPrompts) fieldPrompts[field] = raw.trim();
+    } else if (key in base) {
+      base[key] = parseValue(key, raw, base);
+    }
+  }
+
   return {
-    ...kbPizhamnik,
-    field_prompts: { ...DEFAULT_FIELD_PROMPTS },
+    ...base,
+    field_prompts: fieldPrompts,
   } as RuntimeKb;
 }
 
@@ -123,10 +142,14 @@ export function getShiftsList(event?: string): string[] {
     .filter(Boolean);
 }
 
-/** Save one key to sheet and refresh cache. */
-export async function updateConfigKey(key: string, value: string): Promise<void> {
-  await setConfigInSheet(key, value);
-  sheetCache[key] = value;
+/** Save one key to sheet and refresh cache. event = 'pizhamnik' uses sheet "Настройки Пижамник". */
+export async function updateConfigKey(key: string, value: string, event?: string): Promise<void> {
+  await setConfigInSheet(key, value, event);
+  if (event === 'pizhamnik') {
+    sheetCachePizhamnik[key] = value;
+  } else {
+    sheetCache[key] = value;
+  }
 }
 
 /** Keys admins can edit from the menu, with short labels. */
@@ -153,4 +176,25 @@ export const EDITABLE_KEYS: { key: string; label: string }[] = [
   { key: 'FIELD_PROMPT_companions', label: 'Вопрос: с кем едешь' },
   { key: 'FIELD_PROMPT_phone', label: 'Вопрос: телефон' },
   { key: 'FIELD_PROMPT_shift', label: 'Вопрос: смена' },
+];
+
+/** Keys admins can edit for Pizhamnik (sheet "Настройки Пижамник"). */
+export const EDITABLE_KEYS_PIZHAMNIK: { key: string; label: string }[] = [
+  { key: 'START_MESSAGE', label: 'Приветствие /start' },
+  { key: 'PROGRAM_TEXT', label: 'Текст: программа' },
+  { key: 'CONDITIONS_TEXT', label: 'Текст: условия и стоимость' },
+  { key: 'PRICE', label: 'Цена (₽)' },
+  { key: 'DEPOSIT', label: 'Задаток (₽)' },
+  { key: 'REMAINDER', label: 'Остаток (₽)' },
+  { key: 'PLACES_LIMIT', label: 'Лимит мест' },
+  { key: 'PAYMENT_SBER', label: 'Реквизиты' },
+  { key: 'DEFAULT_SHIFT', label: 'Смена по умолчанию' },
+  { key: 'AVAILABLE_SHIFTS', label: 'Список смен' },
+  { key: 'AFTER_PAYMENT_INSTRUCTION', label: 'Инструкция после оплаты' },
+  { key: 'AFTER_RECEIPT_MESSAGE', label: 'Сообщение после чека' },
+  { key: 'REFUND_DEADLINE_TEXT', label: 'Текст про возврат' },
+  { key: 'REMAINDER_REMINDER_TEXT', label: 'Напоминание об остатке' },
+  { key: 'PLACES_FULL_MESSAGE', label: 'Места закончились' },
+  { key: 'WAITLIST_CONFIRMED_MESSAGE', label: 'Запись в лист ожидания' },
+  { key: 'CONSENT_PD_TEXT', label: 'Текст согласия на ПД' },
 ];

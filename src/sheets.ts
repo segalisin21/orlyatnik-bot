@@ -11,6 +11,7 @@ const PARTICIPANTS_SHEET_ORLYATNIK = 'Участники';
 const PARTICIPANTS_SHEET_PIZHAMNIK = 'Пижамник';
 const LOGS_SHEET = 'Логи';
 const CONFIG_SHEET = 'Настройки';
+const CONFIG_SHEET_PIZHAMNIK = 'Настройки Пижамник';
 const ANSWERS_SHEET = 'Ответы';
 const ANSWERS_MAX_ROWS = 500;
 const PARTICIPANT_HEADERS = [
@@ -269,7 +270,11 @@ export async function getOrCreateUser(
   });
 }
 
-/** Update participant fields by user_id. If event changes to pizhamnik, moves row from Участники to Пижамник. */
+/**
+ * Update participant fields by user_id.
+ * When event changes to pizhamnik, moves row from Участники to Пижамник.
+ * Reverse move (Пижамник → Участники) is not implemented: changing event to orlyatnik only updates the row in place on the current sheet.
+ */
 export async function updateUserFields(
   userId: number,
   patch: Partial<Omit<Participant, 'user_id' | 'rowIndex'>>
@@ -501,16 +506,20 @@ export async function getParticipantsForPizhamnikReminder(): Promise<Participant
   });
 }
 
-export const DEFAULT_SHIFT = '1';
+/** Config sheet name by event. Default = Орлятник (Настройки). */
+function getConfigSheetName(event?: string): string {
+  return event === 'pizhamnik' ? CONFIG_SHEET_PIZHAMNIK : CONFIG_SHEET;
+}
 
-/** Read key-value config from sheet "Настройки". Columns A=key, B=value. Returns {} if sheet missing or empty. */
-export async function getConfigFromSheet(): Promise<Record<string, string>> {
+/** Read key-value config from sheet. Columns A=key, B=value. Returns {} if sheet missing or empty. */
+export async function getConfigFromSheet(event?: string): Promise<Record<string, string>> {
+  const sheetName = getConfigSheetName(event);
   return withRetry(async () => {
     const sheets = getSheets();
     try {
       const res = await sheets.spreadsheets.values.get({
         spreadsheetId: env.GOOGLE_SHEET_ID,
-        range: `'${CONFIG_SHEET}'!A2:B`,
+        range: `'${sheetName}'!A2:B`,
       });
       const rows = (res.data.values ?? []) as string[][];
       const out: Record<string, string> = {};
@@ -529,13 +538,14 @@ export async function getConfigFromSheet(): Promise<Record<string, string>> {
   });
 }
 
-/** Write one config key to sheet. Updates existing row or appends. */
-export async function setConfigInSheet(key: string, value: string): Promise<void> {
+/** Write one config key to sheet. Updates existing row or appends. event = 'pizhamnik' uses sheet "Настройки Пижамник". */
+export async function setConfigInSheet(key: string, value: string, event?: string): Promise<void> {
+  const sheetName = getConfigSheetName(event);
   return withRetry(async () => {
     const sheets = getSheets();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${CONFIG_SHEET}'!A2:B`,
+      range: `'${sheetName}'!A2:B`,
     });
     const rows = (res.data.values ?? []) as string[][];
     let rowIndex = -1;
@@ -548,14 +558,14 @@ export async function setConfigInSheet(key: string, value: string): Promise<void
     if (rowIndex >= 2) {
       await sheets.spreadsheets.values.update({
         spreadsheetId: env.GOOGLE_SHEET_ID,
-        range: `'${CONFIG_SHEET}'!B${rowIndex}`,
+        range: `'${sheetName}'!B${rowIndex}`,
         valueInputOption: 'USER_ENTERED',
         requestBody: { values: [[value]] },
       });
     } else {
       await sheets.spreadsheets.values.append({
         spreadsheetId: env.GOOGLE_SHEET_ID,
-        range: `'${CONFIG_SHEET}'!A:B`,
+        range: `'${sheetName}'!A:B`,
         valueInputOption: 'USER_ENTERED',
         insertDataOption: 'INSERT_ROWS',
         requestBody: { values: [[key, value]] },

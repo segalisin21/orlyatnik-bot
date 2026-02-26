@@ -17,7 +17,8 @@ export interface CreatePaymentResult {
 export async function createPayment(
   amountRub: number,
   userId: number,
-  description?: string
+  description?: string,
+  event?: string
 ): Promise<CreatePaymentResult | null> {
   const shopId = env.YOO_KASSA_SHOP_ID?.trim();
   const secret = env.YOO_KASSA_SECRET_KEY?.trim();
@@ -39,7 +40,8 @@ export async function createPayment(
   };
 
   const auth = Buffer.from(`${shopId}:${secret}`).toString('base64');
-  const idempotenceKey = `orlyatnik_${userId}_${Date.now()}`;
+  const eventSlug = event === 'pizhamnik' ? 'pizhamnik' : 'orlyatnik';
+  const idempotenceKey = `${eventSlug}_${userId}_${Date.now()}`;
 
   try {
     const res = await fetch(`${YOO_KASSA_API}/payments`, {

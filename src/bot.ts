@@ -4,7 +4,7 @@
 
 import { Bot, InlineKeyboard } from 'grammy';
 import { env, isAdmin } from './config.js';
-import { getKb, updateConfigKey, loadSheetConfig, EDITABLE_KEYS, getShiftsList } from './runtime-config.js';
+import { getKb, updateConfigKey, loadSheetConfig, EDITABLE_KEYS, EDITABLE_KEYS_PIZHAMNIK, getShiftsList } from './runtime-config.js';
 import { logger } from './logger.js';
 import {
   getParticipant,
@@ -124,7 +124,7 @@ export function createBot(): Bot {
   }
 
   const adminBroadcastPending = new Map<number, { audience: 'all' | 'CONFIRMED' | 'waiting' }>();
-  const adminSettingsPending = new Map<number, { key: string }>();
+  const adminSettingsPending = new Map<number, { key: string; event?: string }>();
 
   function getAdminMenuKeyboard(): InlineKeyboard {
     return new InlineKeyboard()
@@ -438,7 +438,15 @@ export function createBot(): Bot {
       }
       if (data === 'admin_settings') {
         await safeAnswer();
-        const kb = getKb();
+        const keyboard = new InlineKeyboard()
+          .text('Орлятник', 'admin_settings_orlyatnik')
+          .text('Пижамник', 'admin_settings_pizhamnik');
+        await ctx.reply('⚙ Настройки. Выбери мероприятие (лист в таблице):', { reply_markup: keyboard });
+        return;
+      }
+      if (data === 'admin_settings_orlyatnik') {
+        await safeAnswer();
+        const kb = getKb('orlyatnik');
         const lines = EDITABLE_KEYS.map(({ key, label }) => {
           const raw = key.startsWith('FIELD_PROMPT_') ? (kb.field_prompts as Record<string, string>)[key.replace('FIELD_PROMPT_', '')] ?? '—' : (kb as unknown as Record<string, unknown>)[key];
           const val = typeof raw === 'string' ? (raw.slice(0, 40) + (raw.length > 40 ? '…' : '')) : String(raw ?? '—');
@@ -446,16 +454,34 @@ export function createBot(): Bot {
         });
         const keyboard = new InlineKeyboard();
         EDITABLE_KEYS.forEach(({ key, label }, i) => {
-          keyboard.text(label, `admin_set_${key}`);
+          keyboard.text(label, `admin_set_o_${key}`);
           if (i % 2 === 1) keyboard.row();
         });
-        await ctx.reply('⚙ Настройки (из листа «Настройки» в таблице). Пустые — из кода.\n\n' + lines.join('\n'), { reply_markup: keyboard });
+        await ctx.reply('⚙ Орлятник (лист «Настройки»). Пустые — из кода.\n\n' + lines.join('\n'), { reply_markup: keyboard });
         return;
       }
-      if (data.startsWith('admin_set_')) {
-        const key = data.replace('admin_set_', '');
-        const label = EDITABLE_KEYS.find((e) => e.key === key)?.label ?? key;
-        adminSettingsPending.set(fromId!, { key });
+      if (data === 'admin_settings_pizhamnik') {
+        await safeAnswer();
+        const kb = getKb('pizhamnik');
+        const lines = EDITABLE_KEYS_PIZHAMNIK.map(({ key, label }) => {
+          const raw = (kb as unknown as Record<string, unknown>)[key];
+          const val = typeof raw === 'string' ? (raw.slice(0, 40) + (raw.length > 40 ? '…' : '')) : String(raw ?? '—');
+          return `• ${label}: ${val}`;
+        });
+        const keyboard = new InlineKeyboard();
+        EDITABLE_KEYS_PIZHAMNIK.forEach(({ key, label }, i) => {
+          keyboard.text(label, `admin_set_p_${key}`);
+          if (i % 2 === 1) keyboard.row();
+        });
+        await ctx.reply('⚙ Пижамник (лист «Настройки Пижамник»). Пустые — из кода.\n\n' + lines.join('\n'), { reply_markup: keyboard });
+        return;
+      }
+      if (data.startsWith('admin_set_o_') || data.startsWith('admin_set_p_')) {
+        const isPizhamnik = data.startsWith('admin_set_p_');
+        const key = data.replace(isPizhamnik ? 'admin_set_p_' : 'admin_set_o_', '');
+        const keysList = isPizhamnik ? EDITABLE_KEYS_PIZHAMNIK : EDITABLE_KEYS;
+        const label = keysList.find((e) => e.key === key)?.label ?? key;
+        adminSettingsPending.set(fromId!, { key, event: isPizhamnik ? 'pizhamnik' : undefined });
         await safeAnswer();
         await ctx.reply(`Введите новое значение для «${label}» (одним сообщением). /cancel — отмена.`, { reply_markup: { remove_keyboard: true } });
         return;
@@ -518,13 +544,14 @@ export function createBot(): Bot {
       const settingsPending = adminSettingsPending.get(userId);
       if (settingsPending) {
         adminSettingsPending.delete(userId);
+        const sheetLabel = settingsPending.event === 'pizhamnik' ? 'Настройки Пижамник' : 'Настройки';
         try {
-          await updateConfigKey(settingsPending.key, text);
-          const label = EDITABLE_KEYS.find((e) => e.key === settingsPending.key)?.label ?? settingsPending.key;
-          await ctx.reply(`✅ Сохранено: «${label}». Значение записано в лист «Настройки» — бот уже использует его.`);
+          await updateConfigKey(settingsPending.key, text, settingsPending.event);
+          const label = (settingsPending.event === 'pizhamnik' ? EDITABLE_KEYS_PIZHAMNIK : EDITABLE_KEYS).find((e) => e.key === settingsPending.key)?.label ?? settingsPending.key;
+          await ctx.reply(`✅ Сохранено: «${label}». Значение записано в лист «${sheetLabel}» — бот уже использует его.`);
         } catch (e) {
-          logger.error('Settings save error', { error: String(e), key: settingsPending.key });
-          await ctx.reply('Ошибка записи в таблицу. Проверь, что лист «Настройки» есть в таблице.');
+          logger.error('Settings save error', { error: String(e), key: settingsPending.key, event: settingsPending.event });
+          await ctx.reply(`Ошибка записи в таблицу. Проверь, что лист «${sheetLabel}» есть в таблице.`);
         }
         return;
       }
@@ -558,7 +585,7 @@ export function createBot(): Bot {
         }
         return;
       }
-      if (text === '/start' || text === '/admin') {
+      if (text === '/start' || text.startsWith('/start ') || text === '/admin') {
         await ctx.reply(
           'Привет! Админ-меню. Уведомления о чеках приходят сюда — подтверждай кнопкой под сообщением.',
           { reply_markup: getAdminMenuKeyboard() }
@@ -592,7 +619,8 @@ export function createBot(): Bot {
         await ctx.reply('Добро пожаловать! Выбери кнопку или напиши вопрос в чат — даты, цены, условия или «хочу забронировать».', { reply_markup: orlyatnikStartKeyboard() });
         return;
       }
-      await ctx.reply('Добро пожаловать! Напиши, что хочешь узнать — даты, цены, условия или «хочу забронировать».');
+      // Unknown event: show default (orlyatnik) menu so user always has keyboard
+      await ctx.reply('Добро пожаловать! Выбери кнопку или напиши вопрос в чат — даты, цены, условия или «хочу забронировать».', { reply_markup: orlyatnikStartKeyboard() });
       return;
     }
 
@@ -605,7 +633,7 @@ export function createBot(): Bot {
         let paymentLink: string | null = null;
         let yookassaPaymentId: string | null = null;
         if (isYooKassaEnabled()) {
-          const payment = await createPayment(deposit, userId, `Задаток ${p.event === 'pizhamnik' ? 'Пижамник' : 'Орлятник 21+'}, user ${userId}`);
+          const payment = await createPayment(deposit, userId, `Задаток ${p.event === 'pizhamnik' ? 'Пижамник' : 'Орлятник 21+'}, user ${userId}`, p.event);
           if (payment) {
             paymentLink = payment.confirmation_url;
             yookassaPaymentId = payment.id;
@@ -802,7 +830,7 @@ export function createBot(): Bot {
         let paymentLink: string | null = null;
         let yookassaPaymentId: string | null = null;
         if (isYooKassaEnabled()) {
-          const payment = await createPayment(deposit, userId, `Задаток ${p.event === 'pizhamnik' ? 'Пижамник' : 'Орлятник 21+'}, user ${userId}`);
+          const payment = await createPayment(deposit, userId, `Задаток ${p.event === 'pizhamnik' ? 'Пижамник' : 'Орлятник 21+'}, user ${userId}`, p.event);
           if (payment) {
             paymentLink = payment.confirmation_url;
             yookassaPaymentId = payment.id;
