@@ -134,6 +134,10 @@ function adminChatIds(): number[] {
 }
 
 async function main(): Promise<void> {
+  process.on('unhandledRejection', (reason, promise) => {
+    logger.error('Unhandled rejection', { reason: String(reason), stack: reason instanceof Error ? reason.stack : undefined });
+  });
+
   await loadSheetConfig();
   bot = createBot();
 

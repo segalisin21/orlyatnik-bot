@@ -61,6 +61,13 @@ function eventStartKeyboard(): InlineKeyboard {
     .text('Забронировать место', 'book_place');
 }
 
+/** Кнопки «Да» / «Подтверждаю» для перехода к оплате после проверки анкеты. */
+function confirmAnketaKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('Да', 'confirm_anketa_yes')
+    .text('Подтверждаю', 'confirm_anketa_yes');
+}
+
 /** Фразы, по которым переключается статус. Бот должен явно их подсказывать. */
 const PHRASE_BOOK = /(хочу|готов|давай)\s*(забронировать|записаться|участвовать|ехать)|бронирую|записываюсь|записывай|готов\s*забронировать|готов\s*записаться/i;
 const PHRASE_CONFIRM_ANKETA = /^(да|подтверждаю|ок|окей|всё верно|все верно|верно|готово|да,?\s*верно|подтверждаю анкету)$/i;
@@ -176,7 +183,7 @@ export function createBot(): Bot {
         await ctx.reply(`Повторяю анкету:\n\n${formatAnketa(p)}\n\n${evKb.AFTER_PAYMENT_INSTRUCTION || PHRASE_HINT_RECEIPT}`);
         return;
       }
-      await ctx.reply(PHRASE_HINT_CONFIRM);
+      await ctx.reply(PHRASE_HINT_CONFIRM, { reply_markup: confirmAnketaKeyboard() });
       return;
     }
 
@@ -195,14 +202,14 @@ export function createBot(): Bot {
       if (formOut.needs_confirmation && isFormComplete(p)) {
         await setParticipantStatus(userId, STATUS.FORM_CONFIRM);
         p = await getParticipant(userId, username, chatId);
-        await ctx.reply(`Проверь анкету:\n\n${formatAnketa(p)}\n\n${PHRASE_HINT_CONFIRM}`);
+        await ctx.reply(`Проверь анкету:\n\n${formatAnketa(p)}\n\n${PHRASE_HINT_CONFIRM}`, { reply_markup: confirmAnketaKeyboard() });
         return;
       }
       const next = getNextEmptyField(p);
       if (!next) {
         await setParticipantStatus(userId, STATUS.FORM_CONFIRM);
         p = await getParticipant(userId, username, chatId);
-        await ctx.reply(`Проверь анкету:\n\n${formatAnketa(p)}\n\n${PHRASE_HINT_CONFIRM}`);
+        await ctx.reply(`Проверь анкету:\n\n${formatAnketa(p)}\n\n${PHRASE_HINT_CONFIRM}`, { reply_markup: confirmAnketaKeyboard() });
         return;
       }
       const prompt = getFieldPrompts(ev)[next];
@@ -328,17 +335,9 @@ export function createBot(): Bot {
             }
           }
           try {
-            const menuKb = eventStartKeyboard();
-            if (event === 'pizhamnik') {
-              const kb = getKb('pizhamnik');
-              await bot.api.sendMessage(chatIdForBg, kb.START_MESSAGE ?? '', { reply_markup: menuKb });
-            } else {
-              await bot.api.sendMessage(
-                chatIdForBg,
-                'Добро пожаловать! Выбери кнопку или напиши вопрос в чат — даты, цены, условия или «хочу забронировать».',
-                { reply_markup: menuKb }
-              );
-            }
+          const menuKb = eventStartKeyboard();
+          const kb = getKb(event === 'pizhamnik' ? 'pizhamnik' : 'orlyatnik');
+          await bot.api.sendMessage(chatIdForBg, kb.START_MESSAGE ?? 'Добро пожаловать! Выбери кнопку или напиши вопрос в чат.', { reply_markup: menuKb });
           } catch (e) {
             logger.error('Event choice: send reply failed', { userId: uid, error: String(e) });
           }
@@ -451,31 +450,82 @@ export function createBot(): Bot {
           await safeAnswer();
           return;
         }
+        const doConsent = async (): Promise<boolean> => {
+          const p = await getParticipant(uid!, username, chatId!);
+          const now = new Date().toISOString();
+          if (!p.consent_at?.trim()) {
+            await patchParticipant(uid!, { consent_at: now });
+          }
+          await setParticipantStatus(uid!, STATUS.FORM_FILLING);
+          const p2 = await getParticipant(uid!, username, chatId!);
+          const next = getNextEmptyField(p2);
+          const prompt = next ? getFieldPrompts(p2.event)[next] : '';
+          await ctx.reply(prompt || PHRASE_HINT_CONFIRM, next === 'shift' ? { reply_markup: getShiftKeyboard(p2.event) } : {});
+          await safeAnswer('Принято');
+          return true;
+        };
+        try {
+          await doConsent();
+        } catch (e) {
+          const msg = String((e as Error)?.message ?? e);
+          if (msg.includes('Participant not found')) {
+            invalidateCache(uid!);
+            try {
+              await doConsent();
+            } catch (e2) {
+              logger.error('Consent/setParticipant failed (retry)', { userId: uid, error: String(e2) });
+              try {
+                await safeAnswer('Не удалось сохранить.');
+                await ctx.reply('Не получилось записать. Попробуй нажать кнопку согласия ещё раз.');
+              } catch (_) {}
+            }
+          } else {
+            logger.error('Consent/setParticipant failed', { userId: uid, error: msg });
+            try {
+              await safeAnswer('Не удалось сохранить.');
+              await ctx.reply(
+                'Не получилось записать согласие в таблицу.\n\nЕсли ты выбрал(а) Пижамник — создай в Google-таблице лист «Пижамник» с такой же первой строкой заголовков. Потом нажми кнопку согласия снова.'
+              );
+            } catch (_) {}
+          }
+        }
+        return;
+      }
+
+      if (data === 'confirm_anketa_yes') {
+        const uid = ctx.callbackQuery.from?.id;
+        const chatId = ctx.callbackQuery.message?.chat?.id;
+        const username = ctx.callbackQuery.from?.username ?? '';
+        if (!uid || !chatId) {
+          await safeAnswer();
+          return;
+        }
         let p: Participant;
         try {
           p = await getParticipant(uid, username, chatId);
         } catch (e) {
-          logger.error('getParticipant failed in consent', { userId: uid, error: String(e) });
+          logger.error('confirm_anketa_yes: getParticipant failed', { userId: uid, error: String(e) });
           await safeAnswer('Ошибка, попробуй ещё раз.');
           return;
         }
+        if (p.status !== STATUS.FORM_CONFIRM) {
+          await safeAnswer();
+          return;
+        }
         try {
-          const now = new Date().toISOString();
-          if (!p.consent_at?.trim()) {
-            await patchParticipant(uid, { consent_at: now });
-          }
-          await setParticipantStatus(uid, STATUS.FORM_FILLING);
+          await setParticipantStatus(uid, STATUS.WAIT_PAYMENT);
           p = await getParticipant(uid, username, chatId);
-          const next = getNextEmptyField(p);
-          const prompt = next ? getFieldPrompts(p.event)[next] : '';
-          await ctx.reply(prompt || PHRASE_HINT_CONFIRM, next === 'shift' ? { reply_markup: getShiftKeyboard(p.event) } : {});
+          const evKb = getKb(p.event || 'orlyatnik');
+          const paymentInstruction = (evKb as { PAYMENT_INSTRUCTION?: string }).PAYMENT_INSTRUCTION || `Реквизиты для задатка: ${evKb.PAYMENT_SBER}`;
           await safeAnswer('Принято');
+          await ctx.reply(`Отлично! ${paymentInstruction}`);
+          await ctx.reply(`Повторяю анкету:\n\n${formatAnketa(p)}\n\n${evKb.AFTER_PAYMENT_INSTRUCTION || PHRASE_HINT_RECEIPT}`);
         } catch (e) {
-          logger.error('Consent/setParticipant failed', { userId: uid, error: String(e), stack: (e as Error).stack });
-          await safeAnswer('Не удалось сохранить.');
-          await ctx.reply(
-            'Не получилось записать согласие в таблицу.\n\nЕсли ты выбрал(а) Пижамник — создай в Google-таблице лист с названием «Пижамник» (как у «Участники») и такой же первой строкой с заголовками. Потом нажми кнопку согласия снова.'
-          );
+          logger.error('confirm_anketa_yes failed', { userId: uid, error: String(e) });
+          try {
+            await safeAnswer('Не удалось перейти к оплате.');
+            await ctx.reply('Попробуй нажать кнопку ещё раз или напиши «Да» или «Подтверждаю».');
+          } catch (_) {}
         }
         return;
       }
@@ -520,16 +570,43 @@ export function createBot(): Bot {
         const kbEv = getKb(ev);
         const chosenShift =
           payload === 'default' ? kbEv.DEFAULT_SHIFT : shifts[Number(payload)] ?? kbEv.DEFAULT_SHIFT;
-        p = await patchParticipant(uid, { shift: chosenShift });
+        try {
+          p = await patchParticipant(uid, { shift: chosenShift });
+        } catch (e) {
+          const msg = String((e as Error)?.message ?? e);
+          if (msg.includes('Participant not found')) {
+            invalidateCache(uid);
+            try {
+              p = await getParticipant(uid, username, chatId);
+              p = await patchParticipant(uid, { shift: chosenShift });
+            } catch (e2) {
+              logger.error('shift callback patch failed', { userId: uid, error: String(e2) });
+              try {
+                await safeAnswer('Ошибка, попробуй ещё раз.');
+              } catch (_) {}
+              return;
+            }
+          } else {
+            throw e;
+          }
+        }
         await safeAnswer('Принято');
         const formStatuses: string[] = [STATUS.FORM_FILLING, STATUS.FORM_CONFIRM];
         if (formStatuses.includes(p.status)) {
           const next = getNextEmptyField(p);
           if (!next) {
-            await setParticipantStatus(uid, STATUS.FORM_CONFIRM);
-            p = await getParticipant(uid, username, chatId);
-            const fullAnketa = formatAnketa(p);
-            await ctx.reply(`Проверь анкету:\n\n${fullAnketa}\n\n${PHRASE_HINT_CONFIRM}`);
+            try {
+              await setParticipantStatus(uid, STATUS.FORM_CONFIRM);
+              p = await getParticipant(uid, username, chatId);
+              const fullAnketa = formatAnketa(p);
+              await ctx.reply(`Проверь анкету:\n\n${fullAnketa}\n\n${PHRASE_HINT_CONFIRM}`, { reply_markup: confirmAnketaKeyboard() });
+            } catch (e) {
+              logger.error('shift setParticipantStatus failed', { userId: uid, error: String(e) });
+              try {
+                await safeAnswer('Ошибка.');
+                await ctx.reply('Не удалось обновить статус. Попробуй ещё раз.');
+              } catch (_) {}
+            }
           } else {
             const prompt = getFieldPrompts(p.event)[next];
             await ctx.reply(
@@ -673,10 +750,14 @@ export function createBot(): Bot {
       }
       logger.info('Payment confirmed via button', { user_id: targetUserId });
     } catch (e) {
-      logger.error('Confirm button error', { error: String(e), stack: (e as Error).stack });
-      await safeAnswer('Ошибка, попробуй в таблице.');
+      logger.error('Callback error', { data: ctx.callbackQuery.data, error: String(e), stack: (e as Error).stack });
+      try {
+        await safeAnswer('Ошибка, попробуй ещё раз.');
+      } catch (_) {}
     } finally {
-      await safeAnswer();
+      try {
+        await safeAnswer();
+      } catch (_) {}
     }
   });
 
@@ -760,20 +841,14 @@ export function createBot(): Bot {
     if (text === '/start' || text.startsWith('/start ')) {
       const ev = (p.event ?? '').trim();
       if (!ev) {
-        await ctx.reply('Выберите мероприятие:', { reply_markup: eventChoiceKeyboard() });
+        await ctx.reply(
+          'Привет! 👋 Рады видеть тебя здесь. Выбери мероприятие — расскажем программу, условия и поможем забронировать место.',
+          { reply_markup: eventChoiceKeyboard() }
+        );
         return;
       }
-      if (ev === 'pizhamnik') {
-        const kb = getKb('pizhamnik');
-        await ctx.reply(kb.START_MESSAGE ?? '', { reply_markup: eventStartKeyboard() });
-        return;
-      }
-      if (ev === 'orlyatnik') {
-        await ctx.reply('Добро пожаловать! Выбери кнопку или напиши вопрос в чат — даты, цены, условия или «хочу забронировать».', { reply_markup: eventStartKeyboard() });
-        return;
-      }
-      // Unknown event: show default (orlyatnik) menu so user always has keyboard
-      await ctx.reply('Добро пожаловать! Выбери кнопку или напиши вопрос в чат — даты, цены, условия или «хочу забронировать».', { reply_markup: eventStartKeyboard() });
+      const kb = getKb(ev === 'pizhamnik' ? 'pizhamnik' : 'orlyatnik');
+      await ctx.reply(kb.START_MESSAGE ?? 'Добро пожаловать! Выбери кнопку или напиши вопрос в чат.', { reply_markup: eventStartKeyboard() });
       return;
     }
 
