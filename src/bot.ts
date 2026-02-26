@@ -354,7 +354,7 @@ export function createBot(): Bot {
           payload === 'default' ? kbEv.DEFAULT_SHIFT : shifts[Number(payload)] ?? kbEv.DEFAULT_SHIFT;
         p = await patchParticipant(uid, { shift: chosenShift });
         await safeAnswer('Принято');
-        const formStatuses = [STATUS.FORM_FILLING, STATUS.FORM_CONFIRM];
+        const formStatuses: string[] = [STATUS.FORM_FILLING, STATUS.FORM_CONFIRM];
         if (formStatuses.includes(p.status)) {
           const next = getNextEmptyField(p);
           if (!next) {
