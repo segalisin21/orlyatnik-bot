@@ -266,6 +266,16 @@ export async function getOrCreateUser(
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values: [participantToRow(newRow)] },
     });
+    // Wait for the new row to be visible (Sheets API eventual consistency); poll read-only to avoid duplicate append on retry
+    for (let attempt = 0; attempt < 12; attempt++) {
+      await new Promise((r) => setTimeout(r, 350 * (attempt + 1)));
+      try {
+        const created = await getParticipantByUserId(userId);
+        if (created) return created;
+      } catch (_) {
+        /* ignore read errors, retry */
+      }
+    }
     return newRow;
   });
 }
@@ -275,13 +285,13 @@ export async function getOrCreateUser(
  * When event changes to pizhamnik, moves row from Участники to Пижамник.
  * Reverse move (Пижамник → Участники) is not implemented: changing event to orlyatnik only updates the row in place on the current sheet.
  */
-/** Resolve participant by id, with short retries for eventual consistency after a just-created row. */
-async function getParticipantByUserIdWithRetry(userId: number, maxAttempts = 4): Promise<Participant | null> {
+/** Resolve participant by id, with retries for eventual consistency after a just-created row. */
+async function getParticipantByUserIdWithRetry(userId: number, maxAttempts = 8): Promise<Participant | null> {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const p = await getParticipantByUserId(userId);
     if (p) return p;
     if (attempt < maxAttempts - 1) {
-      await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+      await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
     }
   }
   return null;

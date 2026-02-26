@@ -327,16 +327,20 @@ export function createBot(): Bot {
               return;
             }
           }
-          const menuKb = eventStartKeyboard();
-          if (event === 'pizhamnik') {
-            const kb = getKb('pizhamnik');
-            await bot.api.sendMessage(chatIdForBg, kb.START_MESSAGE ?? '', { reply_markup: menuKb });
-          } else {
-            await bot.api.sendMessage(
-              chatIdForBg,
-              'Добро пожаловать! Выбери кнопку или напиши вопрос в чат — даты, цены, условия или «хочу забронировать».',
-              { reply_markup: menuKb }
-            );
+          try {
+            const menuKb = eventStartKeyboard();
+            if (event === 'pizhamnik') {
+              const kb = getKb('pizhamnik');
+              await bot.api.sendMessage(chatIdForBg, kb.START_MESSAGE ?? '', { reply_markup: menuKb });
+            } else {
+              await bot.api.sendMessage(
+                chatIdForBg,
+                'Добро пожаловать! Выбери кнопку или напиши вопрос в чат — даты, цены, условия или «хочу забронировать».',
+                { reply_markup: menuKb }
+              );
+            }
+          } catch (e) {
+            logger.error('Event choice: send reply failed', { userId: uid, error: String(e) });
           }
         })();
         return;
