@@ -152,11 +152,15 @@ export async function updateConfigKey(key: string, value: string, event?: string
   }
 }
 
-/** Keys admins can edit from the menu, with short labels. */
+/** Keys admins can edit from the menu, with short labels. Даты и тексты берутся из листа «Настройки». */
 export const EDITABLE_KEYS: { key: string; label: string }[] = [
+  { key: 'DATES', label: 'Даты заезда/выезда' },
   { key: 'NEXT_SHIFT_TEXT', label: 'Ближайшая смена (даты)' },
   { key: 'DEFAULT_SHIFT', label: 'Смена по умолчанию' },
   { key: 'AVAILABLE_SHIFTS', label: 'Список смен (через запятую)' },
+  { key: 'START_MESSAGE', label: 'Приветствие после выбора' },
+  { key: 'PROGRAM_TEXT', label: 'Текст: программа' },
+  { key: 'CONDITIONS_TEXT', label: 'Текст: условия и стоимость' },
   { key: 'PRICE', label: 'Цена (₽)' },
   { key: 'DEPOSIT', label: 'Задаток (₽)' },
   { key: 'PAYMENT_SBER', label: 'Реквизиты Сбер' },
@@ -178,8 +182,10 @@ export const EDITABLE_KEYS: { key: string; label: string }[] = [
   { key: 'FIELD_PROMPT_shift', label: 'Вопрос: смена' },
 ];
 
-/** Keys admins can edit for Pizhamnik (sheet "Настройки Пижамник"). */
+/** Keys admins can edit for Pizhamnik (sheet "Настройки Пижамник"). Даты берутся из таблицы. */
 export const EDITABLE_KEYS_PIZHAMNIK: { key: string; label: string }[] = [
+  { key: 'DATES', label: 'Даты заезда/выезда' },
+  { key: 'NEXT_SHIFT_TEXT', label: 'Ближайшая смена (даты)' },
   { key: 'START_MESSAGE', label: 'Приветствие /start' },
   { key: 'PROGRAM_TEXT', label: 'Текст: программа' },
   { key: 'CONDITIONS_TEXT', label: 'Текст: условия и стоимость' },
