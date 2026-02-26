@@ -62,19 +62,43 @@ function eventStartKeyboard(): InlineKeyboard {
     .text('Сменить мероприятие', 'event_change');
 }
 
-/** Кнопки «Да» / «Подтверждаю» для перехода к оплате после проверки анкеты. */
+/** Кнопки «Да» / «Подтверждаю» / «Изменить» (редактирование только до оплаты). */
 function confirmAnketaKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .text('Да', 'confirm_anketa_yes')
-    .text('Подтверждаю', 'confirm_anketa_yes');
+    .text('Подтверждаю', 'confirm_anketa_yes').row()
+    .text('Изменить', 'anketa_edit');
 }
+
+/** Поле анкеты для редактирования (FormField + comment). */
+type AnketaEditField = FormField | 'comment';
+
+const ANKETA_EDIT_FIELDS: { field: AnketaEditField; label: string }[] = [
+  { field: 'fio', label: 'ФИО' },
+  { field: 'city', label: 'Город' },
+  { field: 'dob', label: 'Дата рождения' },
+  { field: 'companions', label: 'С кем едет' },
+  { field: 'phone', label: 'Телефон' },
+  { field: 'comment', label: 'Особенности' },
+  { field: 'shift', label: 'Смена' },
+];
+
+/** Клавиатура «Что изменить?» (только в статусе FORM_CONFIRM, до оплаты). */
+function anketaEditChoiceKeyboard(): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  ANKETA_EDIT_FIELDS.forEach(({ field, label }) => kb.text(label, `anketa_edit_${field}`));
+  return kb;
+}
+
+/** userId → поле, которое пользователь редактирует (ввод нового значения в следующем сообщении). */
+const pendingAnketaEdit = new Map<number, AnketaEditField>();
 
 /** Фразы, по которым переключается статус. Бот должен явно их подсказывать. */
 const PHRASE_BOOK = /(хочу|готов|давай)\s*(забронировать|записаться|участвовать|ехать)|бронирую|записываюсь|записывай|готов\s*забронировать|готов\s*записаться/i;
 const PHRASE_CONFIRM_ANKETA = /^(да|подтверждаю|ок|окей|всё верно|все верно|верно|готово|да,?\s*верно|подтверждаю анкету)$/i;
-const PHRASE_HINT_BOOK = '👉 Чтобы начать заполнение анкеты, напиши: «Хочу забронировать» или «Готов забронировать»';
-const PHRASE_HINT_CONFIRM = '👉 Чтобы перейти к оплате, напиши: «Да» или «Подтверждаю»';
-const PHRASE_HINT_RECEIPT = '👉 Чтобы подтвердить оплату, пришли чек (фото или документ) сюда в бота';
+const PHRASE_HINT_BOOK = '👉 Чтобы начать заполнение анкеты, напиши: «Хочу забронировать» или «Готов забронировать» 😊';
+const PHRASE_HINT_CONFIRM = '👉 Чтобы перейти к оплате, нажми кнопку «Да» или «Подтверждаю» ниже ✨';
+const PHRASE_HINT_RECEIPT = '👉 Чтобы подтвердить оплату, пришли чек (фото или документ) сюда в бота 📎';
 
 function normalizePhone(s: string): string {
   return s.replace(/[^\d+]/g, '');
@@ -160,7 +184,7 @@ export function createBot(): Bot {
     }
 
     if (p.status === STATUS.PAYMENT_SENT) {
-      await ctx.reply('Чек уже принят, ждём подтверждения от менеджера.');
+      await ctx.reply('Чек уже принят, ждём подтверждения от менеджера. Скоро всё подтвердят! 🙌');
       return;
     }
 
@@ -176,12 +200,21 @@ export function createBot(): Bot {
     }
 
     if (p.status === STATUS.FORM_CONFIRM) {
+      const editingField = pendingAnketaEdit.get(userId);
+      if (editingField !== undefined) {
+        pendingAnketaEdit.delete(userId);
+        const value = editingField === 'phone' ? normalizePhone(text) : text.trim();
+        const patch = editingField === 'comment' ? { comment: value } : { [editingField]: value };
+        p = await patchParticipant(userId, patch);
+        await ctx.reply(`Проверь анкету 👇\n\n${formatAnketa(p)}\n\n${PHRASE_HINT_CONFIRM}`, { reply_markup: confirmAnketaKeyboard() });
+        return;
+      }
       if (PHRASE_CONFIRM_ANKETA.test(text)) {
         await setParticipantStatus(userId, STATUS.WAIT_PAYMENT);
         p = await getParticipant(userId, username, chatId);
         const paymentInstruction = (evKb as { PAYMENT_INSTRUCTION?: string }).PAYMENT_INSTRUCTION || `Реквизиты для задатка: ${evKb.PAYMENT_SBER}`;
-        await ctx.reply(`Отлично! ${paymentInstruction}`);
-        await ctx.reply(`Повторяю анкету:\n\n${formatAnketa(p)}\n\n${evKb.AFTER_PAYMENT_INSTRUCTION || PHRASE_HINT_RECEIPT}`);
+        await ctx.reply(`Отлично! 🎉 ${paymentInstruction}`);
+        await ctx.reply(`Повторяю анкету 👇\n\n${formatAnketa(p)}\n\n${evKb.AFTER_PAYMENT_INSTRUCTION || PHRASE_HINT_RECEIPT}`);
         return;
       }
       await ctx.reply(PHRASE_HINT_CONFIRM, { reply_markup: confirmAnketaKeyboard() });
@@ -203,14 +236,14 @@ export function createBot(): Bot {
       if (formOut.needs_confirmation && isFormComplete(p)) {
         await setParticipantStatus(userId, STATUS.FORM_CONFIRM);
         p = await getParticipant(userId, username, chatId);
-        await ctx.reply(`Проверь анкету:\n\n${formatAnketa(p)}\n\n${PHRASE_HINT_CONFIRM}`, { reply_markup: confirmAnketaKeyboard() });
+        await ctx.reply(`Проверь анкету 👇\n\n${formatAnketa(p)}\n\n${PHRASE_HINT_CONFIRM}`, { reply_markup: confirmAnketaKeyboard() });
         return;
       }
       const next = getNextEmptyField(p);
       if (!next) {
         await setParticipantStatus(userId, STATUS.FORM_CONFIRM);
         p = await getParticipant(userId, username, chatId);
-        await ctx.reply(`Проверь анкету:\n\n${formatAnketa(p)}\n\n${PHRASE_HINT_CONFIRM}`, { reply_markup: confirmAnketaKeyboard() });
+        await ctx.reply(`Проверь анкету 👇\n\n${formatAnketa(p)}\n\n${PHRASE_HINT_CONFIRM}`, { reply_markup: confirmAnketaKeyboard() });
         return;
       }
       const prompt = getFieldPrompts(ev)[next];
@@ -220,7 +253,7 @@ export function createBot(): Bot {
 
     if ((p.status === STATUS.NEW || p.status === STATUS.INFO) && PHRASE_BOOK.test(text)) {
       if (evKb.REGISTRATION_CLOSED) {
-        await ctx.reply('Регистрация на это мероприятие сейчас закрыта.');
+        await ctx.reply('Регистрация на это мероприятие сейчас закрыта. Если что-то изменится — напишем! 🙌');
         return;
       }
       if (ev === 'pizhamnik') {
@@ -247,7 +280,7 @@ export function createBot(): Bot {
     }
 
     if ((p.status === STATUS.NEW || p.status === STATUS.INFO) && PHRASE_SHIFT_CHOICE.test(text)) {
-      await ctx.reply('Выбери смену:', { reply_markup: getShiftKeyboard(ev) });
+      await ctx.reply('Выбери смену 👇', { reply_markup: getShiftKeyboard(ev) });
       return;
     }
 
@@ -338,7 +371,7 @@ export function createBot(): Bot {
           try {
           const menuKb = eventStartKeyboard();
           const kb = getKb(event === 'pizhamnik' ? 'pizhamnik' : 'orlyatnik');
-          await bot.api.sendMessage(chatIdForBg, kb.START_MESSAGE ?? 'Добро пожаловать! Выбери кнопку или напиши вопрос в чат.', { reply_markup: menuKb });
+          await bot.api.sendMessage(chatIdForBg, kb.START_MESSAGE ?? 'Привет! 🎉 Выбери кнопку ниже или просто напиши вопрос — с радостью ответим! 🏕✨', { reply_markup: menuKb });
           } catch (e) {
             logger.error('Event choice: send reply failed', { userId: uid, error: String(e) });
           }
@@ -349,7 +382,7 @@ export function createBot(): Bot {
       if (data === 'event_change') {
         await safeAnswer();
         await ctx.reply(
-          'Выбери мероприятие — у каждого свои даты, описание и стоимость:',
+          'Выбери мероприятие — у каждого свои даты, описание и стоимость 👇',
           { reply_markup: eventChoiceKeyboard() }
         );
         return;
@@ -396,7 +429,7 @@ export function createBot(): Bot {
         }
         const evKb = getKb(p.event || 'orlyatnik');
         if (evKb.REGISTRATION_CLOSED) {
-          await ctx.reply('Регистрация на это мероприятие сейчас закрыта.');
+          await ctx.reply('Регистрация на это мероприятие сейчас закрыта. Если что-то изменится — напишем! 🙌');
           await safeAnswer();
           return;
         }
@@ -528,8 +561,8 @@ export function createBot(): Bot {
           const evKb = getKb(p.event || 'orlyatnik');
           const paymentInstruction = (evKb as { PAYMENT_INSTRUCTION?: string }).PAYMENT_INSTRUCTION || `Реквизиты для задатка: ${evKb.PAYMENT_SBER}`;
           await safeAnswer('Принято');
-          await ctx.reply(`Отлично! ${paymentInstruction}`);
-          await ctx.reply(`Повторяю анкету:\n\n${formatAnketa(p)}\n\n${evKb.AFTER_PAYMENT_INSTRUCTION || PHRASE_HINT_RECEIPT}`);
+          await ctx.reply(`Отлично! 🎉 ${paymentInstruction}`);
+          await ctx.reply(`Повторяю анкету 👇\n\n${formatAnketa(p)}\n\n${evKb.AFTER_PAYMENT_INSTRUCTION || PHRASE_HINT_RECEIPT}`);
         } catch (e) {
           logger.error('confirm_anketa_yes failed', { userId: uid, error: String(e) });
           try {
@@ -537,6 +570,67 @@ export function createBot(): Bot {
             await ctx.reply('Попробуй нажать кнопку ещё раз или напиши «Да» или «Подтверждаю».');
           } catch (_) {}
         }
+        return;
+      }
+
+      if (data === 'anketa_edit') {
+        const uid = ctx.callbackQuery.from?.id;
+        const chatId = ctx.callbackQuery.message?.chat?.id;
+        const username = ctx.callbackQuery.from?.username ?? '';
+        if (!uid || !chatId) {
+          await safeAnswer();
+          return;
+        }
+        let p: Participant;
+        try {
+          p = await getParticipant(uid, username, chatId);
+        } catch {
+          await safeAnswer();
+          return;
+        }
+        if (p.status !== STATUS.FORM_CONFIRM) {
+          await safeAnswer();
+          return;
+        }
+        await safeAnswer();
+        await ctx.reply('Что хочешь изменить? ✏️', { reply_markup: anketaEditChoiceKeyboard() });
+        return;
+      }
+
+      if (data.startsWith('anketa_edit_')) {
+        const uid = ctx.callbackQuery.from?.id;
+        const chatId = ctx.callbackQuery.message?.chat?.id;
+        const username = ctx.callbackQuery.from?.username ?? '';
+        if (!uid || !chatId) {
+          await safeAnswer();
+          return;
+        }
+        let p: Participant;
+        try {
+          p = await getParticipant(uid, username, chatId);
+        } catch {
+          await safeAnswer();
+          return;
+        }
+        if (p.status !== STATUS.FORM_CONFIRM) {
+          await safeAnswer();
+          return;
+        }
+        const field = data.slice('anketa_edit_'.length) as AnketaEditField;
+        if (!ANKETA_EDIT_FIELDS.some((f) => f.field === field)) {
+          await safeAnswer();
+          return;
+        }
+        pendingAnketaEdit.set(uid, field);
+        const ev = p.event || 'orlyatnik';
+        const prompts: Record<AnketaEditField, string> = {
+          ...getFieldPrompts(ev),
+          comment: 'Особенности/аллергии (или — если ничего).',
+        };
+        const prompt = prompts[field] ?? 'Напиши новое значение.';
+        const withShiftKb = field === 'shift' ? { reply_markup: getShiftKeyboard(ev) } : {};
+        await safeAnswer();
+        await ctx.reply(`Напиши новое значение:\n${prompt}`, withShiftKb);
         return;
       }
 
@@ -554,7 +648,7 @@ export function createBot(): Bot {
             // fallback to default
           }
         }
-        await ctx.reply('Выбери смену:', { reply_markup: getShiftKeyboard(event) });
+        await ctx.reply('Выбери смену 👇', { reply_markup: getShiftKeyboard(event) });
         return;
       }
 
@@ -601,6 +695,7 @@ export function createBot(): Bot {
           }
         }
         await safeAnswer('Принято');
+        pendingAnketaEdit.delete(uid);
         const formStatuses: string[] = [STATUS.FORM_FILLING, STATUS.FORM_CONFIRM];
         if (formStatuses.includes(p.status)) {
           const next = getNextEmptyField(p);
@@ -609,7 +704,7 @@ export function createBot(): Bot {
               await setParticipantStatus(uid, STATUS.FORM_CONFIRM);
               p = await getParticipant(uid, username, chatId);
               const fullAnketa = formatAnketa(p);
-              await ctx.reply(`Проверь анкету:\n\n${fullAnketa}\n\n${PHRASE_HINT_CONFIRM}`, { reply_markup: confirmAnketaKeyboard() });
+              await ctx.reply(`Проверь анкету 👇\n\n${fullAnketa}\n\n${PHRASE_HINT_CONFIRM}`, { reply_markup: confirmAnketaKeyboard() });
             } catch (e) {
               logger.error('shift setParticipantStatus failed', { userId: uid, error: String(e) });
               try {
@@ -851,7 +946,7 @@ export function createBot(): Bot {
     // /start всегда показывает приветствие и выбор мероприятия (не переходим в меню события по сохранённому event)
     if (text === '/start' || text.startsWith('/start ')) {
       await ctx.reply(
-        'Привет! 👋 Рады видеть тебя здесь. Выбери мероприятие — расскажем программу, условия и поможем забронировать место.',
+        'Привет! 🎉 Рады видеть тебя здесь! Выбери мероприятие — расскажем программу, условия и поможем забронировать место. Есть вопросы? Спрашивай! 🏕✨',
         { reply_markup: eventChoiceKeyboard() }
       );
       return;
@@ -912,7 +1007,7 @@ export function createBot(): Bot {
       return;
     }
     if (p.status === STATUS.PAYMENT_SENT) {
-      await ctx.reply('Чек уже принят, ждём подтверждения от менеджера.');
+      await ctx.reply('Чек уже принят, ждём подтверждения от менеджера. Скоро всё подтвердят! 🙌');
       return;
     }
     await setParticipantStatus(userId, STATUS.PAYMENT_SENT, { payment_proof_file_id: fileId });
@@ -921,7 +1016,7 @@ export function createBot(): Bot {
     const mediaLabel = type === 'photo' ? 'фото' : 'документ';
     const adminText = `Чек (${mediaLabel}) от участника. Мероприятие: ${eventLabel}\n@${username} (id: ${userId})\n\n${formatAnketa(updated)}\n\nНажми кнопку ниже или измени статус в таблице на CONFIRMED.`;
     await sendToAdmin(adminText, type === 'photo' ? { photo: fileId, confirmUserId: userId } : { document: fileId, confirmUserId: userId });
-    await ctx.reply('Принял, ждём подтверждения. Как только менеджер подтвердит — пришлю ссылку на чат и контакт.');
+    await ctx.reply('Принял! 🙌 Ждём подтверждения от менеджера. Как только подтвердят — пришлю ссылку на чат и контакт.');
     if (updated.event === 'pizhamnik') {
       const kb = getKb('pizhamnik');
       if (kb.AFTER_RECEIPT_MESSAGE) await ctx.reply(kb.AFTER_RECEIPT_MESSAGE);

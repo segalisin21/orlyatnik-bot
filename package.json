@@ -8,7 +8,9 @@
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "lint": "eslint src --ext .ts",
-    "client-base": "ts-node scripts/build-client-base.ts"
+    "client-base": "ts-node scripts/build-client-base.ts",
+    "seed:quote": "ts-node scripts/quote-answers-csv.ts",
+    "seed:parse": "ts-node scripts/parse-chat-history.ts"
   },
   "engines": {
     "node": ">=20"
