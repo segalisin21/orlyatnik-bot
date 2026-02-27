@@ -158,7 +158,9 @@ export function getNextEmptyField(p: Participant): FormField | null {
 }
 
 export function formatAnketa(p: Participant): string {
+  const eventLabel = (p.event ?? '') === 'pizhamnik' ? 'Пижамник' : 'Орлятник 21+';
   const lines = [
+    `Мероприятие: ${eventLabel}`,
     `ФИО: ${p.fio || '—'}`,
     `Город: ${p.city || '—'}`,
     `Дата рождения: ${p.dob || '—'}`,

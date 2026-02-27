@@ -70,6 +70,15 @@ function confirmAnketaKeyboard(): InlineKeyboard {
     .text('Вернуться в меню', 'back_to_menu');
 }
 
+/** Выбор способа оплаты после подтверждения анкеты. */
+function paymentChoiceKeyboard(): InlineKeyboard {
+  const kb = new InlineKeyboard().text('Оплатить переводом на карту', 'pay_transfer');
+  if (isYooKassaEnabled()) {
+    kb.row().text('Оплатить онлайн (ЮKassa)', 'pay_yookassa');
+  }
+  return kb;
+}
+
 /** Поле анкеты для редактирования (FormField + comment). */
 type AnketaEditField = FormField | 'comment';
 
@@ -302,11 +311,10 @@ export function createBot(): Bot {
         return;
       }
       if (PHRASE_CONFIRM_ANKETA.test(text)) {
-        await setParticipantStatus(userId, STATUS.WAIT_PAYMENT);
-        p = await getParticipant(userId, username, chatId);
-        const paymentInstruction = (evKb as { PAYMENT_INSTRUCTION?: string }).PAYMENT_INSTRUCTION || `Реквизиты для задатка: ${evKb.PAYMENT_SBER}`;
-        await ctx.reply(`Отлично! 🎉 ${paymentInstruction}`);
-        await ctx.reply(`Повторяю анкету 👇\n\n${formatAnketa(p)}\n\n${evKb.AFTER_PAYMENT_INSTRUCTION || PHRASE_HINT_RECEIPT}`);
+        await ctx.reply(
+          'Отлично! 🎉 Анкету сохранил. Выбери, как тебе удобнее внести задаток:',
+          { reply_markup: paymentChoiceKeyboard() }
+        );
         return;
       }
       await ctx.reply(PHRASE_HINT_CONFIRM, { reply_markup: confirmAnketaKeyboard() });
@@ -379,8 +387,16 @@ export function createBot(): Bot {
       await setParticipantStatus(userId, STATUS.FORM_FILLING);
       p = await getParticipant(userId, username, chatId);
       const next = getNextEmptyField(p);
-      const prompt = next ? getFieldPrompts(ev)[next] : '';
-      await ctx.reply(prompt || PHRASE_HINT_CONFIRM, next === 'shift' ? { reply_markup: getShiftKeyboard(ev) } : {});
+      if (!next) {
+        await setParticipantStatus(userId, STATUS.FORM_CONFIRM);
+        p = await getParticipant(userId, username, chatId);
+        await ctx.reply(`Проверь анкету 👇\n\n${formatAnketa(p)}\n\n${PHRASE_HINT_CONFIRM}`, {
+          reply_markup: confirmAnketaKeyboard(),
+        });
+        return;
+      }
+      const prompt = getFieldPrompts(ev)[next];
+      await ctx.reply(prompt, next === 'shift' ? { reply_markup: getShiftKeyboard(ev) } : {});
       return;
     }
 
@@ -450,7 +466,13 @@ export function createBot(): Bot {
         }
         await safeAnswer('Записываю…');
         const event = data === 'event_orlyatnik' ? 'orlyatnik' : 'pizhamnik';
-        const patch: { event: string } = { event };
+        // При явном выборе мероприятия сбрасываем статус, чтобы можно было
+        // заново проходить анкету и оплату для другой программы.
+        const patch: { event: string; status: string; yookassa_payment_id?: string } = {
+          event,
+          status: STATUS.INFO,
+          yookassa_payment_id: '',
+        };
         // Run Sheets + reply in background so webhook returns before Telegram timeout
         const chatIdForBg = chatId;
         void (async () => {
@@ -578,8 +600,17 @@ export function createBot(): Bot {
         await setParticipantStatus(uid, STATUS.FORM_FILLING);
         p = await getParticipant(uid, username, chatId);
         const next = getNextEmptyField(p);
-        const prompt = next ? getFieldPrompts(p.event)[next] : '';
-        await ctx.reply(prompt || PHRASE_HINT_CONFIRM, next === 'shift' ? { reply_markup: getShiftKeyboard(p.event) } : {});
+        if (!next) {
+          await setParticipantStatus(uid, STATUS.FORM_CONFIRM);
+          p = await getParticipant(uid, username, chatId);
+          await ctx.reply(`Проверь анкету 👇\n\n${formatAnketa(p)}\n\n${PHRASE_HINT_CONFIRM}`, {
+            reply_markup: confirmAnketaKeyboard(),
+          });
+          await safeAnswer('Принято');
+          return;
+        }
+        const prompt = getFieldPrompts(p.event)[next];
+        await ctx.reply(prompt, next === 'shift' ? { reply_markup: getShiftKeyboard(p.event) } : {});
         await safeAnswer('Принято');
         return;
       }
@@ -681,18 +712,107 @@ export function createBot(): Bot {
           return;
         }
         try {
-          await setParticipantStatus(uid, STATUS.WAIT_PAYMENT);
-          p = await getParticipant(uid, username, chatId);
-          const evKb = getKb(p.event || 'orlyatnik');
-          const paymentInstruction = (evKb as { PAYMENT_INSTRUCTION?: string }).PAYMENT_INSTRUCTION || `Реквизиты для задатка: ${evKb.PAYMENT_SBER}`;
           await safeAnswer('Принято');
-          await ctx.reply(`Отлично! 🎉 ${paymentInstruction}`);
-          await ctx.reply(`Повторяю анкету 👇\n\n${formatAnketa(p)}\n\n${evKb.AFTER_PAYMENT_INSTRUCTION || PHRASE_HINT_RECEIPT}`);
+          await ctx.reply(
+            'Отлично! 🎉 Анкету сохранил. Выбери, как тебе удобнее внести задаток:',
+            { reply_markup: paymentChoiceKeyboard() }
+          );
         } catch (e) {
           logger.error('confirm_anketa_yes failed', { userId: uid, error: String(e) });
           try {
             await safeAnswer('Не удалось перейти к оплате.');
             await ctx.reply('Попробуй нажать кнопку ещё раз или напиши «Да» или «Подтверждаю».');
+          } catch (_) {}
+        }
+        return;
+      }
+
+      if (data === 'pay_transfer' || data === 'pay_yookassa') {
+        const uid = ctx.callbackQuery.from?.id;
+        const chatId = ctx.callbackQuery.message?.chat?.id;
+        const username = ctx.callbackQuery.from?.username ?? '';
+        if (!uid || !chatId) {
+          await safeAnswer();
+          return;
+        }
+        let p: Participant;
+        try {
+          p = await getParticipant(uid, username, chatId);
+        } catch (e) {
+          logger.error('pay_method: getParticipant failed', { userId: uid, error: String(e) });
+          await safeAnswer('Ошибка, попробуй ещё раз.');
+          return;
+        }
+        const evKb = getKb(p.event || 'orlyatnik');
+        if (data === 'pay_transfer') {
+          try {
+            const updated = await setParticipantStatus(uid, STATUS.WAIT_PAYMENT);
+            p = updated;
+            const paymentInstruction =
+              (evKb as { PAYMENT_INSTRUCTION?: string }).PAYMENT_INSTRUCTION ||
+              `Реквизиты для задатка: ${evKb.PAYMENT_SBER}`;
+            await safeAnswer('Принято');
+            await ctx.reply(`Отлично! 🎉 ${paymentInstruction}`);
+            await ctx.reply(
+              `Повторяю анкету 👇\n\n${formatAnketa(p)}\n\n${
+                evKb.AFTER_PAYMENT_INSTRUCTION || PHRASE_HINT_RECEIPT
+              }`
+            );
+          } catch (e) {
+            logger.error('pay_transfer failed', { userId: uid, error: String(e) });
+            try {
+              await safeAnswer('Не удалось показать реквизиты.');
+              await ctx.reply('Попробуй ещё раз выбрать способ оплаты или напиши менеджеру.');
+            } catch (_) {}
+          }
+          return;
+        }
+
+        // pay_yookassa
+        if (!isYooKassaEnabled()) {
+          await safeAnswer('Онлайн-оплата временно недоступна.');
+          await ctx.reply(
+            `Сейчас онлайн-оплата недоступна. Давай воспользуемся переводом на карту 👇\n\n${
+              (evKb as { PAYMENT_INSTRUCTION?: string }).PAYMENT_INSTRUCTION ||
+              `Реквизиты для задатка: ${evKb.PAYMENT_SBER}`
+            }`
+          );
+          return;
+        }
+        try {
+          const amount = Number(evKb.DEPOSIT || evKb.PRICE || 0) || 0;
+          const description =
+            p.event === 'pizhamnik'
+              ? 'Задаток за участие в программе «Пижамник»'
+              : 'Задаток за участие в лагере Орлятник 21+';
+          const payment = await createPayment(amount, uid, description, p.event);
+          if (!payment) {
+            await safeAnswer('Не получилось создать ссылку для оплаты.');
+            await ctx.reply(
+              `Онлайн-оплата сейчас не работает. Давай воспользуемся переводом на карту 👇\n\n${
+                (evKb as { PAYMENT_INSTRUCTION?: string }).PAYMENT_INSTRUCTION ||
+                `Реквизиты для задатка: ${evKb.PAYMENT_SBER}`
+              }`
+            );
+            return;
+          }
+          await setParticipantStatus(uid, STATUS.WAIT_PAYMENT, { yookassa_payment_id: payment.id });
+          await safeAnswer('Принято');
+          await ctx.reply(
+            `Супер! Вот ссылка для оплаты через ЮKassa:\n${payment.confirmation_url}\n\n${
+              evKb.AFTER_PAYMENT_INSTRUCTION || PHRASE_HINT_RECEIPT
+            }`
+          );
+        } catch (e) {
+          logger.error('pay_yookassa failed', { userId: uid, error: String(e) });
+          try {
+            await safeAnswer('Не получилось создать ссылку для оплаты.');
+            await ctx.reply(
+              `Онлайн-оплата сейчас не работает. Давай воспользуемся переводом на карту 👇\n\n${
+                (evKb as { PAYMENT_INSTRUCTION?: string }).PAYMENT_INSTRUCTION ||
+                `Реквизиты для задатка: ${evKb.PAYMENT_SBER}`
+              }`
+            );
           } catch (_) {}
         }
         return;

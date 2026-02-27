@@ -280,11 +280,6 @@ export async function getOrCreateUser(
   });
 }
 
-/**
- * Update participant fields by user_id.
- * When event changes to pizhamnik, moves row from Участники to Пижамник.
- * Reverse move (Пижамник → Участники) is not implemented: changing event to orlyatnik only updates the row in place on the current sheet.
- */
 /** Resolve participant by id, with retries for eventual consistency after a just-created row. */
 async function getParticipantByUserIdWithRetry(userId: number, maxAttempts = 8): Promise<Participant | null> {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -312,6 +307,8 @@ export async function updateUserFields(
       updated_at: new Date().toISOString(),
     };
 
+    // --- Перемещение между листами при смене события ---
+    // Участники → Пижамник
     if (patch.event === 'pizhamnik' && sheetSource === PARTICIPANTS_SHEET_ORLYATNIK) {
       const sheets = getSheets();
       const rows = await getSheetRows(PARTICIPANTS_SHEET_ORLYATNIK);
@@ -371,6 +368,83 @@ export async function updateUserFields(
             requestBody: { values: [participantToRow({ ...updated, event: 'pizhamnik' })] },
           });
           return { ...updated, event: 'pizhamnik', sheetSource: PARTICIPANTS_SHEET_ORLYATNIK };
+        }
+        throw moveErr;
+      }
+    }
+
+    // Пижамник → Участники
+    if (patch.event === 'orlyatnik' && sheetSource === PARTICIPANTS_SHEET_PIZHAMNIK) {
+      const sheets = getSheets();
+      const rows = await getSheetRows(PARTICIPANTS_SHEET_PIZHAMNIK);
+      const rowIndex = rows.findIndex((r) => r[0] === uid);
+      if (rowIndex < 0) throw new Error(`Participant not found in Пижамник: ${uid}`);
+      try {
+        await sheets.spreadsheets.values.append({
+          spreadsheetId: env.GOOGLE_SHEET_ID,
+          range: `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A:T`,
+          valueInputOption: 'USER_ENTERED',
+          insertDataOption: 'INSERT_ROWS',
+          requestBody: { values: [participantToRow({ ...updated, event: 'orlyatnik' })] },
+        });
+        try {
+          const ids = await getSheetIds();
+          const sheetId = ids[PARTICIPANTS_SHEET_PIZHAMNIK];
+          if (sheetId != null) {
+            await sheets.spreadsheets.batchUpdate({
+              spreadsheetId: env.GOOGLE_SHEET_ID,
+              requestBody: {
+                requests: [
+                  {
+                    deleteDimension: {
+                      range: {
+                        sheetId,
+                        dimension: 'ROWS',
+                        startIndex: rowIndex + 1,
+                        endIndex: rowIndex + 2,
+                      },
+                    },
+                  },
+                ],
+              },
+            });
+          }
+        } catch (deleteErr) {
+          logger.error(
+            'Sheet move (Пижамник → Участники): append succeeded but delete failed — clearing old row to prevent duplicate',
+            { userId: uid, error: String(deleteErr) }
+          );
+          const clearRange = `'${PARTICIPANTS_SHEET_PIZHAMNIK}'!A${rowIndex + 2}:T${rowIndex + 2}`;
+          await sheets.spreadsheets.values
+            .update({
+              spreadsheetId: env.GOOGLE_SHEET_ID,
+              range: clearRange,
+              valueInputOption: 'USER_ENTERED',
+              requestBody: {
+                values: [participantToRow({ ...updated, event: 'orlyatnik', status: 'MOVED' } as Participant)],
+              },
+            })
+            .catch((e) =>
+              logger.error('Failed to mark old row as MOVED (Пижамник → Участники)', { userId: uid, error: String(e) })
+            );
+        }
+        sheetIdsCache = null;
+        return { ...updated, event: 'orlyatnik', sheetSource: PARTICIPANTS_SHEET_ORLYATNIK };
+      } catch (moveErr: unknown) {
+        const msg = String((moveErr as { message?: string })?.message ?? moveErr);
+        if (msg.includes('Unable to parse range') || msg.includes('not found') || msg.includes('404')) {
+          logger.warn(
+            'Sheet Участники missing or invalid, keeping participant in Пижамник with event orlyatnik',
+            { userId: uid }
+          );
+          const range = `'${PARTICIPANTS_SHEET_PIZHAMNIK}'!A${rowIndex + 2}:T${rowIndex + 2}`;
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: env.GOOGLE_SHEET_ID,
+            range,
+            valueInputOption: 'USER_ENTERED',
+            requestBody: { values: [participantToRow({ ...updated, event: 'orlyatnik' })] },
+          });
+          return { ...updated, event: 'orlyatnik', sheetSource: PARTICIPANTS_SHEET_PIZHAMNIK };
         }
         throw moveErr;
       }
