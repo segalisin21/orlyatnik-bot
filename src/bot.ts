@@ -67,7 +67,8 @@ function confirmAnketaKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .text('Да', 'confirm_anketa_yes')
     .text('Подтверждаю', 'confirm_anketa_yes').row()
-    .text('Изменить', 'anketa_edit');
+    .text('Изменить', 'anketa_edit')
+    .text('Вернуться в меню', 'back_to_menu');
 }
 
 /** Поле анкеты для редактирования (FormField + comment). */
@@ -96,6 +97,7 @@ const pendingAnketaEdit = new Map<number, AnketaEditField>();
 /** Фразы, по которым переключается статус. Бот должен явно их подсказывать. */
 const PHRASE_BOOK = /(хочу|готов|давай)\s*(забронировать|записаться|участвовать|ехать)|бронирую|записываюсь|записывай|готов\s*забронировать|готов\s*записаться/i;
 const PHRASE_CONFIRM_ANKETA = /^(да|подтверждаю|ок|окей|всё верно|все верно|верно|готово|да,?\s*верно|подтверждаю анкету)$/i;
+const PHRASE_GREETING = /^(привет|здравствуй|здравствуйте|хай|хаюшки|добрый\s*(день|вечер|утро)|приветствую|приветик|здарова|доброй\s*ночи|здорово|прив)$/i;
 const PHRASE_HINT_BOOK = '👉 Чтобы начать заполнение анкеты, напиши: «Хочу забронировать» или «Готов забронировать» 😊';
 const PHRASE_HINT_CONFIRM = '👉 Чтобы перейти к оплате, нажми кнопку «Да» или «Подтверждаю» ниже ✨';
 const PHRASE_HINT_RECEIPT = '👉 Чтобы подтвердить оплату, пришли чек (фото или документ) сюда в бота 📎';
@@ -173,7 +175,91 @@ export function createBot(): Bot {
     text: string,
     p: Participant
   ): Promise<void> {
-    const ev = (p.event ?? '').trim() || 'orlyatnik';
+    const rawEvent = (p.event ?? '').trim();
+    const hasEvent = rawEvent.length > 0;
+
+    // Если мероприятие не выбрано
+    if (!hasEvent) {
+      const lower = text.toLowerCase().trim();
+
+      // Если пользователь уже в процессе анкеты/оплаты, но event пуст — мягко возвращаем к выбору
+      if (p.status !== STATUS.NEW && p.status !== STATUS.INFO) {
+        await ctx.reply(
+          'Привет! Сначала выбери мероприятие — Орлятник 21+ или Пижамник. После этого продолжим оформление брони. 🏕✨',
+          { reply_markup: eventChoiceKeyboard() }
+        );
+        return;
+      }
+
+      // Вход в ветку текстом: «пижамник» / «орлятник»
+      if (/(пижамник)/i.test(lower)) {
+        const kbP = getKb('pizhamnik');
+        let updated = p;
+        try {
+          updated = await patchParticipant(userId, {
+            event: 'pizhamnik',
+            shift: kbP.DEFAULT_SHIFT,
+            status: STATUS.INFO,
+          });
+        } catch (e) {
+          logger.error('set event pizhamnik by text failed', { userId, error: String(e) });
+        }
+        const menuKb = eventStartKeyboard();
+        await ctx.reply(
+          kbP.START_MESSAGE ??
+            '«Пижамник» 21–22 марта. Дом за городом. Два дня тепла, практик, общения и перезагрузки. 🌙',
+          { reply_markup: menuKb }
+        );
+        return;
+      }
+
+      if (/(орлятник)/i.test(lower)) {
+        const kbO = getKb('orlyatnik');
+        let updated = p;
+        try {
+          updated = await patchParticipant(userId, { event: 'orlyatnik', status: STATUS.INFO });
+        } catch (e) {
+          logger.error('set event orlyatnik by text failed', { userId, error: String(e) });
+        }
+        const menuKb = eventStartKeyboard();
+        await ctx.reply(
+          kbO.START_MESSAGE ??
+            '«Орлятник 21+» — выезд на базу в Чувашии с программой для взрослых. Готов рассказать подробнее! 🔥',
+          { reply_markup: menuKb }
+        );
+        return;
+      }
+
+      // Приветствие без выбора мероприятия — яркий общий текст + кнопки выбора
+      if ((p.status === STATUS.NEW || p.status === STATUS.INFO) && PHRASE_GREETING.test(text.trim())) {
+        await ctx.reply(
+          'Привет! 🎉 Это бот регистрации на выезды:\n\n' +
+            '🌲 Орлятник 21+ — лагерь для взрослых с тусовками, мафией, сапами и фестивалем красок.\n' +
+            '🧸 Пижамник — тёплый камерный выезд с практиками, баней и фильмами.\n\n' +
+            'Выбери, что интересует сейчас — расскажу про программу, даты и цену, а потом помогу забронировать место. 🏕✨',
+          { reply_markup: eventChoiceKeyboard() }
+        );
+        return;
+      }
+
+      // Любой другой текст без выбранного мероприятия → сначала предложить выбор
+      if (p.status === STATUS.NEW || p.status === STATUS.INFO) {
+        await ctx.reply(
+          'Чтобы подсказать по датам, программе и стоимости — сначала выбери мероприятие: Орлятник 21+ или Пижамник. 🙂',
+          { reply_markup: eventChoiceKeyboard() }
+        );
+        return;
+      }
+
+      // На всякий случай, если сюда попали с другим статусом
+      await ctx.reply(
+        'Сначала выбери мероприятие — Орлятник 21+ или Пижамник. После выбора продолжим. 🏕✨',
+        { reply_markup: eventChoiceKeyboard() }
+      );
+      return;
+    }
+
+    const ev = rawEvent as 'orlyatnik' | 'pizhamnik';
     const evKb = getKb(ev);
 
     if (p.status === STATUS.CONFIRMED) {
@@ -200,6 +286,16 @@ export function createBot(): Bot {
     }
 
     if (p.status === STATUS.FORM_CONFIRM) {
+      const lower = text.toLowerCase().trim();
+      if (lower === 'меню' || lower === 'в меню' || lower === 'назад' || lower === 'вернуться в меню') {
+        await patchParticipant(userId, { status: STATUS.INFO });
+        const kb = getKb(ev);
+        await ctx.reply(
+          kb.START_MESSAGE ?? 'Привет! 🎉 Выбери кнопку ниже или просто напиши вопрос — с радостью ответим! 🏕✨',
+          { reply_markup: eventStartKeyboard() }
+        );
+        return;
+      }
       const editingField = pendingAnketaEdit.get(userId);
       if (editingField !== undefined) {
         pendingAnketaEdit.delete(userId);
@@ -222,6 +318,16 @@ export function createBot(): Bot {
     }
 
     if (p.status === STATUS.FORM_FILLING) {
+      const lower = text.toLowerCase().trim();
+      if (lower === 'меню' || lower === 'в меню' || lower === 'назад' || lower === 'вернуться в меню') {
+        await patchParticipant(userId, { status: STATUS.INFO });
+        const kb = getKb(ev);
+        await ctx.reply(
+          kb.START_MESSAGE ?? 'Привет! 🎉 Выбери кнопку ниже или просто напиши вопрос — с радостью ответим! 🏕✨',
+          { reply_markup: eventStartKeyboard() }
+        );
+        return;
+      }
       const formOut = await getFormModeReply(text, p.status, p, ev);
       let patch = formOut.form_patch || {};
       const nextEmpty = getNextEmptyField(p);
@@ -281,6 +387,15 @@ export function createBot(): Bot {
 
     if ((p.status === STATUS.NEW || p.status === STATUS.INFO) && PHRASE_SHIFT_CHOICE.test(text)) {
       await ctx.reply('Выбери смену 👇', { reply_markup: getShiftKeyboard(ev) });
+      return;
+    }
+
+    if ((p.status === STATUS.NEW || p.status === STATUS.INFO) && PHRASE_GREETING.test(text.trim())) {
+      const kb = getKb(ev);
+      await ctx.reply(
+        kb.START_MESSAGE ?? 'Привет! 🎉 Выбери кнопку ниже или просто напиши вопрос — с радостью ответим! 🏕✨',
+        { reply_markup: eventStartKeyboard() }
+      );
       return;
     }
 
@@ -380,7 +495,19 @@ export function createBot(): Bot {
       }
 
       if (data === 'event_change') {
+        const uid = ctx.callbackQuery.from?.id;
+        const chatId = ctx.callbackQuery.message?.chat?.id;
+        const username = ctx.callbackQuery.from?.username ?? '';
         await safeAnswer();
+        if (!uid || !chatId) {
+          return;
+        }
+        try {
+          await patchParticipant(uid, { event: '', status: STATUS.NEW });
+          invalidateCache(uid);
+        } catch (e) {
+          logger.error('event_change patch failed', { userId: uid, error: String(e) });
+        }
         await ctx.reply(
           'Выбери мероприятие — у каждого свои даты, описание и стоимость 👇',
           { reply_markup: eventChoiceKeyboard() }
@@ -570,6 +697,43 @@ export function createBot(): Bot {
             await ctx.reply('Попробуй нажать кнопку ещё раз или напиши «Да» или «Подтверждаю».');
           } catch (_) {}
         }
+        return;
+      }
+
+      if (data === 'back_to_menu') {
+        const uid = ctx.callbackQuery.from?.id;
+        const chatId = ctx.callbackQuery.message?.chat?.id;
+        const username = ctx.callbackQuery.from?.username ?? '';
+        if (!uid || !chatId) {
+          await safeAnswer();
+          return;
+        }
+        let p: Participant;
+        try {
+          p = await getParticipant(uid, username, chatId);
+        } catch (e) {
+          logger.error('back_to_menu: getParticipant failed', { userId: uid, error: String(e) });
+          await safeAnswer('Ошибка, попробуй ещё раз.');
+          return;
+        }
+        if (p.status !== STATUS.FORM_FILLING && p.status !== STATUS.FORM_CONFIRM) {
+          await safeAnswer();
+          return;
+        }
+        try {
+          p = await patchParticipant(uid, { status: STATUS.INFO });
+        } catch (e) {
+          logger.error('back_to_menu: patch failed', { userId: uid, error: String(e) });
+          await safeAnswer('Ошибка, попробуй ещё раз.');
+          return;
+        }
+        const ev = (p.event ?? 'orlyatnik') as 'orlyatnik' | 'pizhamnik';
+        const kbEv = getKb(ev);
+        await safeAnswer('Возвращаю в меню');
+        await ctx.reply(
+          kbEv.START_MESSAGE ?? 'Привет! 🎉 Выбери кнопку ниже или просто напиши вопрос — с радостью ответим! 🏕✨',
+          { reply_markup: eventStartKeyboard() }
+        );
         return;
       }
 
