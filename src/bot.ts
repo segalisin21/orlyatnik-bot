@@ -38,6 +38,15 @@ function getFieldPrompts(event?: string): Record<FormField, string> {
   return getKb(event).field_prompts;
 }
 
+/** Базовый текст вопроса по смене + подставленный список доступных смен из AVAILABLE_SHIFTS. */
+function buildShiftPrompt(event?: string): string {
+  const kb = getKb(event);
+  const base = kb.field_prompts.shift;
+  const shifts = getShiftsList(event);
+  if (!shifts.length) return base;
+  return `${base}\n\nДоступные смены: ${shifts.join(', ')}`;
+}
+
 /** Inline keyboard: one button per shift (shift_0, shift_1, ...) + "По умолчанию" (shift_default). */
 function getShiftKeyboard(event?: string): InlineKeyboard {
   const shifts = getShiftsList(event);
@@ -273,6 +282,32 @@ export function createBot(): Bot {
     const evKb = getKb(ev);
 
     if (p.status === STATUS.CONFIRMED) {
+      const lower = text.toLowerCase();
+      const wantsPizhamnik = /пижамник/.test(lower);
+      const wantsOrlyatnik = /орлятник/.test(lower);
+
+      // Позволяем после подтверждённого Орлятника уйти в ветку Пижамника, и наоборот.
+      if (wantsPizhamnik && ev !== 'pizhamnik') {
+        const updated = await patchParticipant(userId, { event: 'pizhamnik', status: STATUS.INFO, yookassa_payment_id: '' });
+        const kb = getKb('pizhamnik');
+        await ctx.reply(
+          kb.START_MESSAGE ??
+            '«Пижамник». Дом за городом. Два дня тепла, практик, общения и перезагрузки. Выбери кнопку ниже или просто напиши вопрос 💫',
+          { reply_markup: eventStartKeyboard() }
+        );
+        return;
+      }
+      if (wantsOrlyatnik && ev !== 'orlyatnik') {
+        const updated = await patchParticipant(userId, { event: 'orlyatnik', status: STATUS.INFO, yookassa_payment_id: '' });
+        const kb = getKb('orlyatnik');
+        await ctx.reply(
+          kb.START_MESSAGE ??
+            'Орлятник 21+. Лагерь, где можно отдохнуть, повеселиться и завести новых друзей. Выбери кнопку ниже или просто напиши вопрос 🏕✨',
+          { reply_markup: eventStartKeyboard() }
+        );
+        return;
+      }
+
       await ctx.reply(
         `Ты уже в списке!\n\nЧат участников: ${env.CHAT_INVITE_LINK || '—'}\nМенеджер: @${env.MANAGER_TG_USERNAME}`
       );
@@ -359,7 +394,10 @@ export function createBot(): Bot {
         await ctx.reply(`Проверь анкету 👇\n\n${formatAnketa(p)}\n\n${PHRASE_HINT_CONFIRM}`, { reply_markup: confirmAnketaKeyboard() });
         return;
       }
-      const prompt = getFieldPrompts(ev)[next];
+      const prompt =
+        next === 'shift'
+          ? buildShiftPrompt(ev)
+          : getFieldPrompts(ev)[next];
       await ctx.reply(prompt, next === 'shift' ? { reply_markup: getShiftKeyboard(ev) } : {});
       return;
     }
@@ -395,7 +433,10 @@ export function createBot(): Bot {
         });
         return;
       }
-      const prompt = getFieldPrompts(ev)[next];
+      const prompt =
+        next === 'shift'
+          ? buildShiftPrompt(ev)
+          : getFieldPrompts(ev)[next];
       await ctx.reply(prompt, next === 'shift' ? { reply_markup: getShiftKeyboard(ev) } : {});
       return;
     }
@@ -609,7 +650,10 @@ export function createBot(): Bot {
           await safeAnswer('Принято');
           return;
         }
-        const prompt = getFieldPrompts(p.event)[next];
+        const prompt =
+          next === 'shift'
+            ? buildShiftPrompt(p.event)
+            : getFieldPrompts(p.event)[next];
         await ctx.reply(prompt, next === 'shift' ? { reply_markup: getShiftKeyboard(p.event) } : {});
         await safeAnswer('Принято');
         return;
@@ -995,7 +1039,10 @@ export function createBot(): Bot {
               } catch (_) {}
             }
           } else {
-            const prompt = getFieldPrompts(p.event)[next];
+            const prompt =
+              next === 'shift'
+                ? buildShiftPrompt(p.event)
+                : getFieldPrompts(p.event)[next];
             await ctx.reply(
               prompt,
               next === 'shift' ? { reply_markup: getShiftKeyboard(p.event) } : {}
