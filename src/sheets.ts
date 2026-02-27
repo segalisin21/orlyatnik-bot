@@ -248,7 +248,7 @@ export async function getOrCreateUser(
       companions: '',
       phone: '',
       comment: '',
-      shift: kb.DEFAULT_SHIFT,
+      shift: '',
       payment_proof_file_id: '',
       final_sent_at: '',
       updated_at: now,

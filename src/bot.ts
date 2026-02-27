@@ -62,12 +62,11 @@ function eventStartKeyboard(): InlineKeyboard {
     .text('Сменить мероприятие', 'event_change');
 }
 
-/** Кнопки «Да» / «Подтверждаю» / «Изменить» (редактирование только до оплаты). */
+/** Кнопки подтверждения анкеты (одна кнопка) + Изменить / Вернуться в меню. */
 function confirmAnketaKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text('Да', 'confirm_anketa_yes')
     .text('Подтверждаю', 'confirm_anketa_yes').row()
-    .text('Изменить', 'anketa_edit')
+    .text('Изменить', 'anketa_edit').row()
     .text('Вернуться в меню', 'back_to_menu');
 }
 
@@ -84,10 +83,12 @@ const ANKETA_EDIT_FIELDS: { field: AnketaEditField; label: string }[] = [
   { field: 'shift', label: 'Смена' },
 ];
 
-/** Клавиатура «Что изменить?» (только в статусе FORM_CONFIRM, до оплаты). */
+/** Клавиатура «Что изменить?» (только в статусе FORM_CONFIRM, до оплаты). Каждая кнопка — на отдельной строке. */
 function anketaEditChoiceKeyboard(): InlineKeyboard {
   const kb = new InlineKeyboard();
-  ANKETA_EDIT_FIELDS.forEach(({ field, label }) => kb.text(label, `anketa_edit_${field}`));
+  ANKETA_EDIT_FIELDS.forEach(({ field, label }) => {
+    kb.text(label, `anketa_edit_${field}`).row();
+  });
   return kb;
 }
 
@@ -99,7 +100,7 @@ const PHRASE_BOOK = /(хочу|готов|давай)\s*(забронирова�
 const PHRASE_CONFIRM_ANKETA = /^(да|подтверждаю|ок|окей|всё верно|все верно|верно|готово|да,?\s*верно|подтверждаю анкету)$/i;
 const PHRASE_GREETING = /^(привет|здравствуй|здравствуйте|хай|хаюшки|добрый\s*(день|вечер|утро)|приветствую|приветик|здарова|доброй\s*ночи|здорово|прив)$/i;
 const PHRASE_HINT_BOOK = '👉 Чтобы начать заполнение анкеты, напиши: «Хочу забронировать» или «Готов забронировать» 😊';
-const PHRASE_HINT_CONFIRM = '👉 Чтобы перейти к оплате, нажми кнопку «Да» или «Подтверждаю» ниже ✨';
+const PHRASE_HINT_CONFIRM = '👉 Чтобы перейти к оплате, нажми кнопку «Подтверждаю» ниже ✨';
 const PHRASE_HINT_RECEIPT = '👉 Чтобы подтвердить оплату, пришли чек (фото или документ) сюда в бота 📎';
 
 function normalizePhone(s: string): string {
@@ -266,11 +267,6 @@ export function createBot(): Bot {
       await ctx.reply(
         `Ты уже в списке!\n\nЧат участников: ${env.CHAT_INVITE_LINK || '—'}\nМенеджер: @${env.MANAGER_TG_USERNAME}`
       );
-      return;
-    }
-
-    if (p.status === STATUS.PAYMENT_SENT) {
-      await ctx.reply('Чек уже принят, ждём подтверждения от менеджера. Скоро всё подтвердят! 🙌');
       return;
     }
 
@@ -451,8 +447,7 @@ export function createBot(): Bot {
         }
         await safeAnswer('Записываю…');
         const event = data === 'event_orlyatnik' ? 'orlyatnik' : 'pizhamnik';
-        const patch: { event: string; shift?: string } = { event };
-        if (event === 'pizhamnik') patch.shift = getKb('pizhamnik').DEFAULT_SHIFT;
+        const patch: { event: string } = { event };
         // Run Sheets + reply in background so webhook returns before Telegram timeout
         const chatIdForBg = chatId;
         void (async () => {
@@ -1001,10 +996,14 @@ export function createBot(): Bot {
         return;
       }
       const now = new Date().toISOString();
-      await updateUserFields(userIdNum, { status: STATUS.CONFIRMED, final_sent_at: now });
+      const updated = await updateUserFields(userIdNum, { status: STATUS.CONFIRMED, final_sent_at: now });
       invalidateCache(userIdNum);
-      const finalText = `Ты в списке!\n\nЧат участников: ${env.CHAT_INVITE_LINK || '—'}\nМенеджер: @${env.MANAGER_TG_USERNAME}`;
-      await bot.api.sendMessage(p.chat_id, finalText);
+      const kbEv = getKb(updated.event === 'pizhamnik' ? 'pizhamnik' : 'orlyatnik');
+      const finalText =
+        updated.event === 'pizhamnik' && (kbEv as { AFTER_RECEIPT_MESSAGE?: string }).AFTER_RECEIPT_MESSAGE
+          ? (kbEv as { AFTER_RECEIPT_MESSAGE: string }).AFTER_RECEIPT_MESSAGE
+          : `Ты в списке!\n\nЧат участников: ${env.CHAT_INVITE_LINK || '—'}\nМенеджер: @${env.MANAGER_TG_USERNAME}`;
+      await bot.api.sendMessage(updated.chat_id, finalText);
       await safeAnswer('Оплата подтверждена');
       const msg = ctx.callbackQuery.message;
       const adminChatId = msg?.chat?.id ?? adminChatIds()[0];
@@ -1170,10 +1169,6 @@ export function createBot(): Bot {
       );
       return;
     }
-    if (p.status === STATUS.PAYMENT_SENT) {
-      await ctx.reply('Чек уже принят, ждём подтверждения от менеджера. Скоро всё подтвердят! 🙌');
-      return;
-    }
     await setParticipantStatus(userId, STATUS.PAYMENT_SENT, { payment_proof_file_id: fileId });
     const updated = await getParticipant(userId, username, chatId);
     const eventLabel = updated.event === 'pizhamnik' ? 'Пижамник' : 'Орлятник 21+';
@@ -1181,10 +1176,6 @@ export function createBot(): Bot {
     const adminText = `Чек (${mediaLabel}) от участника. Мероприятие: ${eventLabel}\n@${username} (id: ${userId})\n\n${formatAnketa(updated)}\n\nНажми кнопку ниже или измени статус в таблице на CONFIRMED.`;
     await sendToAdmin(adminText, type === 'photo' ? { photo: fileId, confirmUserId: userId } : { document: fileId, confirmUserId: userId });
     await ctx.reply('Принял! 🙌 Ждём подтверждения от менеджера. Как только подтвердят — пришлю ссылку на чат и контакт.');
-    if (updated.event === 'pizhamnik') {
-      const kb = getKb('pizhamnik');
-      if (kb.AFTER_RECEIPT_MESSAGE) await ctx.reply(kb.AFTER_RECEIPT_MESSAGE);
-    }
     logOut(String(userId), STATUS.PAYMENT_SENT, 'OUT', 'text', 'payment received');
   }
 

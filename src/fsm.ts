@@ -143,7 +143,7 @@ export function markUpdateProcessed(updateId: number): void {
   processedUpdates.set(updateId, Date.now());
 }
 
-export const FORM_FIELDS = ['fio', 'city', 'dob', 'companions', 'phone', 'shift'] as const;
+export const FORM_FIELDS = ['fio', 'city', 'dob', 'companions', 'phone', 'comment', 'shift'] as const;
 export type FormField = (typeof FORM_FIELDS)[number];
 
 export function isFormComplete(p: Participant): boolean {
