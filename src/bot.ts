@@ -330,6 +330,9 @@ export function createBot(): Bot {
       if (nextEmpty === 'companions' && !patch.companions && text.trim().length > 0 && text.trim().length <= 200) {
         patch = { ...patch, companions: text.trim() };
       }
+      if (nextEmpty === 'comment' && !('comment' in patch) && text.trim().length > 0 && text.trim().length <= 500) {
+        patch = { ...patch, comment: text.trim() };
+      }
       if (Object.keys(patch).length > 0) {
         const phonePatch = patch.phone != null ? { ...patch, phone: normalizePhone(patch.phone) } : patch;
         p = await patchParticipant(userId, phonePatch);
