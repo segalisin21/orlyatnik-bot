@@ -3,7 +3,7 @@
  */
 
 import { Bot, InlineKeyboard } from 'grammy';
-import { env, isAdmin, ROOT_EVENT_CHOICE_MESSAGE } from './config.js';
+import { env, isAdmin, ROOT_EVENT_CHOICE_MESSAGE, FEATURE_PIZHAMNIK_UI_ENABLED } from './config.js';
 import { getKb, updateConfigKey, loadSheetConfig, EDITABLE_KEYS, EDITABLE_KEYS_PIZHAMNIK, getShiftsList } from './runtime-config.js';
 import { logger } from './logger.js';
 import {
@@ -58,17 +58,18 @@ function getShiftKeyboard(event?: string): InlineKeyboard {
 }
 
 function eventChoiceKeyboard(): InlineKeyboard {
-  return new InlineKeyboard()
-    .text('Орлятник 21+', 'event_orlyatnik')
-    .text('Пижамник', 'event_pizhamnik');
+  const kb = new InlineKeyboard().text('Орлятник 21+', 'event_orlyatnik');
+  if (FEATURE_PIZHAMNIK_UI_ENABLED) kb.text('Пижамник', 'event_pizhamnik');
+  return kb;
 }
 
 function eventStartKeyboard(): InlineKeyboard {
-  return new InlineKeyboard()
+  const kb = new InlineKeyboard()
     .text('Узнать программу', 'program')
     .text('Условия и стоимость', 'conditions').row()
-    .text('🔥 Забронировать место', 'book_place').row()
-    .text('Сменить мероприятие', 'event_change');
+    .text('🔥 Забронировать место', 'book_place');
+  if (FEATURE_PIZHAMNIK_UI_ENABLED) kb.row().text('Сменить мероприятие', 'event_change');
+  return kb;
 }
 
 const TELEGRAM_MESSAGE_MAX = 4096;
@@ -232,7 +233,7 @@ export function createBot(): Bot {
       // Если пользователь уже в процессе анкеты/оплаты, но event пуст — мягко возвращаем к выбору
       if (p.status !== STATUS.NEW && p.status !== STATUS.INFO) {
         await ctx.reply(
-          'Привет! Сначала выбери мероприятие — Орлятник 21+ или Пижамник. После этого продолжим оформление брони. 🏕✨',
+          'Чтобы продолжить оформление брони, нажми «Орлятник 21+» ниже. 🏕✨',
           { reply_markup: eventChoiceKeyboard() }
         );
         return;
@@ -240,6 +241,13 @@ export function createBot(): Bot {
 
       // Вход в ветку текстом: «пижамник» / «орлятник»
       if (/(пижамник)/i.test(lower)) {
+        if (!FEATURE_PIZHAMNIK_UI_ENABLED) {
+          await ctx.reply(
+            'Сейчас в боте открыта только регистрация на Орлятник 21+. Нажми кнопку ниже 👇',
+            { reply_markup: eventChoiceKeyboard() }
+          );
+          return;
+        }
         const kbP = getKb('pizhamnik');
         let updated = p;
         try {
@@ -286,17 +294,16 @@ export function createBot(): Bot {
       // Любой другой текст без выбранного мероприятия → сначала предложить выбор
       if (p.status === STATUS.NEW || p.status === STATUS.INFO) {
         await ctx.reply(
-          'Чтобы подсказать по датам, программе и стоимости — сначала выбери мероприятие: Орлятник 21+ или Пижамник. 🙂',
+          'Чтобы подсказать по датам, программе и стоимости — нажми «Орлятник 21+» ниже. 🙂',
           { reply_markup: eventChoiceKeyboard() }
         );
         return;
       }
 
       // На всякий случай, если сюда попали с другим статусом
-      await ctx.reply(
-        'Сначала выбери мероприятие — Орлятник 21+ или Пижамник. После выбора продолжим. 🏕✨',
-        { reply_markup: eventChoiceKeyboard() }
-      );
+      await ctx.reply('Нажми «Орлятник 21+» ниже, чтобы открыть меню регистрации. 🏕✨', {
+        reply_markup: eventChoiceKeyboard(),
+      });
       return;
     }
 
@@ -305,29 +312,48 @@ export function createBot(): Bot {
 
     if (p.status === STATUS.CONFIRMED) {
       const lower = text.toLowerCase();
-      const wantsPizhamnik = /пижамник/.test(lower);
-      const wantsOrlyatnik = /орлятник/.test(lower);
+      if (FEATURE_PIZHAMNIK_UI_ENABLED) {
+        const wantsPizhamnik = /пижамник/.test(lower);
+        const wantsOrlyatnik = /орлятник/.test(lower);
 
-      // Позволяем после подтверждённого Орлятника уйти в ветку Пижамника, и наоборот.
-      if (wantsPizhamnik && ev !== 'pizhamnik') {
-        const updated = await patchParticipant(userId, { event: 'pizhamnik', status: STATUS.INFO, yookassa_payment_id: '' });
-        const kb = getKb('pizhamnik');
-        await ctx.reply(
-          kb.START_MESSAGE ??
-            '«Пижамник». Дом за городом. Два дня тепла, практик, общения и перезагрузки. Выбери кнопку ниже или просто напиши вопрос 💫',
-          { reply_markup: eventStartKeyboard() }
-        );
-        return;
-      }
-      if (wantsOrlyatnik && ev !== 'orlyatnik') {
-        const updated = await patchParticipant(userId, { event: 'orlyatnik', status: STATUS.INFO, yookassa_payment_id: '' });
-        const kb = getKb('orlyatnik');
-        await ctx.reply(
-          kb.START_MESSAGE ??
-            'Орлятник 21+. Лагерь, где можно отдохнуть, повеселиться и завести новых друзей. Выбери кнопку ниже или просто напиши вопрос 🏕✨',
-          { reply_markup: eventStartKeyboard() }
-        );
-        return;
+        // Позволяем после подтверждённого Орлятника уйти в ветку Пижамника, и наоборот.
+        if (wantsPizhamnik && ev !== 'pizhamnik') {
+          const updated = await patchParticipant(userId, { event: 'pizhamnik', status: STATUS.INFO, yookassa_payment_id: '' });
+          const kb = getKb('pizhamnik');
+          await ctx.reply(
+            kb.START_MESSAGE ??
+              '«Пижамник». Дом за городом. Два дня тепла, практик, общения и перезагрузки. Выбери кнопку ниже или просто напиши вопрос 💫',
+            { reply_markup: eventStartKeyboard() }
+          );
+          return;
+        }
+        if (wantsOrlyatnik && ev !== 'orlyatnik') {
+          const updated = await patchParticipant(userId, { event: 'orlyatnik', status: STATUS.INFO, yookassa_payment_id: '' });
+          const kb = getKb('orlyatnik');
+          await ctx.reply(
+            kb.START_MESSAGE ??
+              'Орлятник 21+. Лагерь, где можно отдохнуть, повеселиться и завести новых друзей. Выбери кнопку ниже или просто напиши вопрос 🏕✨',
+            { reply_markup: eventStartKeyboard() }
+          );
+          return;
+        }
+      } else {
+        if (/пижамник/.test(lower)) {
+          await ctx.reply(
+            'Сейчас в боте только регистрация на Орлятник 21+. Вопросы по брони — пиши сюда; менеджер подключится при необходимости.'
+          );
+          return;
+        }
+        if (/орлятник/.test(lower) && ev !== 'orlyatnik') {
+          await patchParticipant(userId, { event: 'orlyatnik', status: STATUS.INFO, yookassa_payment_id: '' });
+          const kb = getKb('orlyatnik');
+          await ctx.reply(
+            kb.START_MESSAGE ??
+              'Орлятник 21+. Лагерь, где можно отдохнуть, повеселиться и завести новых друзей. Выбери кнопку ниже или просто напиши вопрос 🏕✨',
+            { reply_markup: eventStartKeyboard() }
+          );
+          return;
+        }
       }
 
       await ctx.reply(
@@ -558,6 +584,10 @@ export function createBot(): Bot {
           await safeAnswer();
           return;
         }
+        if (data === 'event_pizhamnik' && !FEATURE_PIZHAMNIK_UI_ENABLED) {
+          await safeAnswer('Сейчас доступна только регистрация на Орлятник 21+.');
+          return;
+        }
         await safeAnswer('Записываю…');
         const event = data === 'event_orlyatnik' ? 'orlyatnik' : 'pizhamnik';
         // При явном выборе мероприятия сбрасываем статус, чтобы можно было
@@ -609,6 +639,10 @@ export function createBot(): Bot {
       }
 
       if (data === 'event_change') {
+        if (!FEATURE_PIZHAMNIK_UI_ENABLED) {
+          await safeAnswer();
+          return;
+        }
         const uid = ctx.callbackQuery.from?.id;
         const chatId = ctx.callbackQuery.message?.chat?.id;
         const username = ctx.callbackQuery.from?.username ?? '';
@@ -1212,10 +1246,15 @@ export function createBot(): Bot {
       }
       if (data === 'admin_settings') {
         await safeAnswer();
-        const keyboard = new InlineKeyboard()
-          .text('Орлятник', 'admin_settings_orlyatnik')
-          .text('Пижамник', 'admin_settings_pizhamnik');
-        await ctx.reply('⚙ Настройки. Выбери мероприятие (лист в таблице):', { reply_markup: keyboard });
+        if (FEATURE_PIZHAMNIK_UI_ENABLED) {
+          const keyboard = new InlineKeyboard()
+            .text('Орлятник', 'admin_settings_orlyatnik')
+            .text('Пижамник', 'admin_settings_pizhamnik');
+          await ctx.reply('⚙ Настройки. Выбери мероприятие (лист в таблице):', { reply_markup: keyboard });
+        } else {
+          const keyboard = new InlineKeyboard().text('Орлятник 21+', 'admin_settings_orlyatnik');
+          await ctx.reply('⚙ Настройки (лист «Настройки» в таблице):', { reply_markup: keyboard });
+        }
         return;
       }
       if (data === 'admin_settings_orlyatnik') {
