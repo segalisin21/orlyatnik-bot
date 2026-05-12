@@ -422,7 +422,7 @@ export function createBot(): Bot {
       const looksLikeConfirm = formOut.needs_confirmation || PHRASE_CONFIRM_ANKETA.test(text);
 
       // Если пользователь написал «подтверждаю»/«верно», но анкета ещё не заполнена — не показывать «анкета подтверждена», а спокойно запросить следующее поле.
-      if (looksLikeConfirm && !formComplete) {
+      if (looksLikeConfirm && !formComplete && next) {
         const prompt =
           next === 'shift'
             ? buildShiftPrompt(ev)
