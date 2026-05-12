@@ -7,7 +7,7 @@ import cron from 'node-cron';
 import { webhookCallback } from 'grammy';
 import { env } from './config.js';
 import { logger } from './logger.js';
-import { loadSheetConfig } from './runtime-config.js';
+import { loadSheetConfig, getKb } from './runtime-config.js';
 import { createBot } from './bot.js';
 import {
   getParticipantsPendingFinalSend,
@@ -15,11 +15,12 @@ import {
   updateUserFields,
   getParticipantByUserId,
   getParticipantsForPizhamnikReminder,
+  type Participant,
 } from './sheets.js';
 import { invalidateCache, STATUS } from './fsm.js';
-import { getKb } from './runtime-config.js';
 import { handleYooKassaWebhook } from './yookassa.js';
 import { InlineKeyboard } from 'grammy';
+import { collectBookingConfirmPhotoUrls, sendBookingConfirmedWithPhotos } from './send-booking-confirm.js';
 
 let bot: ReturnType<typeof createBot>;
 
@@ -52,9 +53,15 @@ const REMINDER_PIZHAMNIK_BY_STATUS: Record<string, string> = {
     'Мы получили твой чек, менеджер скоро проверит. Если есть вопросы — пиши.',
 };
 
-async function sendFinalToParticipant(chatId: string, managerUsername: string, chatInviteLink: string): Promise<void> {
-  const text = `Ты в списке!\n\nЧат участников: ${chatInviteLink || '—'}\nМенеджер: @${managerUsername}`;
-  await bot.api.sendMessage(chatId, text);
+async function sendFinalToParticipant(p: Participant): Promise<void> {
+  const ev = p.event === 'pizhamnik' ? 'pizhamnik' : 'orlyatnik';
+  const kb = getKb(ev);
+  const finalText =
+    p.event === 'pizhamnik' && kb.AFTER_RECEIPT_MESSAGE?.trim()
+      ? kb.AFTER_RECEIPT_MESSAGE.trim()
+      : `Ты в списке!\n\nЧат участников: ${env.CHAT_INVITE_LINK || '—'}\nМенеджер: @${env.MANAGER_TG_USERNAME}`;
+  const photos = collectBookingConfirmPhotoUrls(kb as unknown as Record<string, unknown>);
+  await sendBookingConfirmedWithPhotos(bot.api, p.chat_id, finalText, photos);
 }
 
 async function cronJob(): Promise<void> {
@@ -62,7 +69,7 @@ async function cronJob(): Promise<void> {
     const list = await getParticipantsPendingFinalSend();
     for (const p of list) {
       try {
-        await sendFinalToParticipant(p.chat_id, env.MANAGER_TG_USERNAME, env.CHAT_INVITE_LINK);
+        await sendFinalToParticipant(p);
         const now = new Date().toISOString();
         await updateUserFields(Number(p.user_id), { final_sent_at: now });
         invalidateCache(Number(p.user_id));

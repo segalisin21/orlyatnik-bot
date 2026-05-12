@@ -23,6 +23,10 @@ export interface RuntimeKb {
   MANAGER_FOR_COMPLEX: string;
   MEDIA_CHANNEL: string;
   AFTER_PAYMENT_INSTRUCTION: string;
+  /** Альбом после подтверждения брони (HTTPS URL из листа «Настройки»). */
+  BOOKING_CONFIRM_PHOTO_1?: string;
+  BOOKING_CONFIRM_PHOTO_2?: string;
+  BOOKING_CONFIRM_PHOTO_3?: string;
   DEFAULT_SHIFT: string;
   AVAILABLE_SHIFTS: string;
   OBJECTION_PRICE: string;
@@ -47,7 +51,8 @@ export interface RuntimeKb {
   EVENT_DATE?: string;
 }
 
-const DEFAULT_FIELD_PROMPTS: Record<FormField, string> = {
+/** Дефолты вопросов анкеты (лист «Настройки»: FIELD_PROMPT_*). */
+export const DEFAULT_FIELD_PROMPTS: Record<FormField, string> = {
   fio: 'Супер! Давай знакомиться. Напиши своё ФИО полностью, как в паспорте — это нужно для базы отдыха.',
   city: 'Из какого ты города?',
   dob: 'Дата рождения? (можно в любом формате)',
