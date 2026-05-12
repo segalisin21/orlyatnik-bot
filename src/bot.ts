@@ -3,7 +3,7 @@
  */
 
 import { Bot, InlineKeyboard } from 'grammy';
-import { env, isAdmin } from './config.js';
+import { env, isAdmin, ROOT_EVENT_CHOICE_MESSAGE } from './config.js';
 import { getKb, updateConfigKey, loadSheetConfig, EDITABLE_KEYS, EDITABLE_KEYS_PIZHAMNIK, getShiftsList } from './runtime-config.js';
 import { logger } from './logger.js';
 import {
@@ -67,8 +67,36 @@ function eventStartKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .text('Узнать программу', 'program')
     .text('Условия и стоимость', 'conditions').row()
-    .text('Забронировать место', 'book_place').row()
+    .text('🔥 Забронировать место', 'book_place').row()
     .text('Сменить мероприятие', 'event_change');
+}
+
+const TELEGRAM_MESSAGE_MAX = 4096;
+
+/** Разбивает длинный текст для нескольких sendMessage (лимит Telegram 4096). */
+function splitTelegramMessage(text: string, maxLen = TELEGRAM_MESSAGE_MAX): string[] {
+  const t = text.trim();
+  if (t.length === 0) return [];
+  if (t.length <= maxLen) return [t];
+  const parts: string[] = [];
+  let rest = t;
+  while (rest.length > maxLen) {
+    let cut = rest.lastIndexOf('\n\n', maxLen);
+    if (cut < Math.floor(maxLen / 2)) cut = rest.lastIndexOf('\n', maxLen);
+    if (cut < Math.floor(maxLen / 2)) cut = maxLen;
+    parts.push(rest.slice(0, cut).trimEnd());
+    rest = rest.slice(cut).trimStart();
+  }
+  if (rest.length) parts.push(rest);
+  return parts;
+}
+
+/** После блока «Условия и стоимость»: компактное меню + возврат к полному меню. */
+function conditionsFollowupKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('Узнать программу', 'program')
+    .text('🔥 Забронировать место', 'book_place').row()
+    .text('Вернуться в меню', 'info_menu_home');
 }
 
 /** Кнопки подтверждения анкеты (одна кнопка) + Изменить / Вернуться в меню. */
@@ -251,13 +279,7 @@ export function createBot(): Bot {
 
       // Приветствие без выбора мероприятия — яркий общий текст + кнопки выбора
       if ((p.status === STATUS.NEW || p.status === STATUS.INFO) && PHRASE_GREETING.test(text.trim())) {
-        await ctx.reply(
-          'Привет! 🎉 Это бот регистрации на выезды:\n\n' +
-            '🌲 Орлятник 21+ — лагерь для взрослых с тусовками, мафией, сапами и фестивалем красок.\n' +
-            '🧸 Пижамник — тёплый камерный выезд с практиками, баней и фильмами.\n\n' +
-            'Выбери, что интересует сейчас — расскажу про программу, даты и цену, а потом помогу забронировать место. 🏕✨',
-          { reply_markup: eventChoiceKeyboard() }
-        );
+        await ctx.reply(ROOT_EVENT_CHOICE_MESSAGE, { reply_markup: eventChoiceKeyboard() });
         return;
       }
 
@@ -367,6 +389,21 @@ export function createBot(): Bot {
         );
         return;
       }
+      // «Подтверждаю»/«верно» при неполной анкете — не вызываем LLM, сразу просим следующее поле без сообщения «анкета подтверждена».
+      if (PHRASE_CONFIRM_ANKETA.test(text) && !isFormComplete(p)) {
+        const next = getNextEmptyField(p);
+        if (next) {
+          const prompt =
+            next === 'shift'
+              ? buildShiftPrompt(ev)
+              : getFieldPrompts(ev)[next];
+          await ctx.reply(
+            `Анкета пока не до конца заполнена — давай по порядку.\n\n${prompt}`,
+            next === 'shift' ? { reply_markup: getShiftKeyboard(ev) } : {}
+          );
+          return;
+        }
+      }
       const formOut = await getFormModeReply(text, p.status, p, ev);
       let patch = formOut.form_patch || {};
       const nextEmpty = getNextEmptyField(p);
@@ -380,14 +417,30 @@ export function createBot(): Bot {
         const phonePatch = patch.phone != null ? { ...patch, phone: normalizePhone(patch.phone) } : patch;
         p = await patchParticipant(userId, phonePatch);
       }
+      const next = getNextEmptyField(p);
+      const formComplete = isFormComplete(p);
+      const looksLikeConfirm = formOut.needs_confirmation || PHRASE_CONFIRM_ANKETA.test(text);
+
+      // Если пользователь написал «подтверждаю»/«верно», но анкета ещё не заполнена — не показывать «анкета подтверждена», а спокойно запросить следующее поле.
+      if (looksLikeConfirm && !formComplete) {
+        const prompt =
+          next === 'shift'
+            ? buildShiftPrompt(ev)
+            : getFieldPrompts(ev)[next];
+        await ctx.reply(
+          `Анкета пока не до конца заполнена — давай по порядку.\n\n${prompt}`,
+          next === 'shift' ? { reply_markup: getShiftKeyboard(ev) } : {}
+        );
+        return;
+      }
+
       if (formOut.reply_text) await ctx.reply(formOut.reply_text);
-      if (formOut.needs_confirmation && isFormComplete(p)) {
+      if (formOut.needs_confirmation && formComplete) {
         await setParticipantStatus(userId, STATUS.FORM_CONFIRM);
         p = await getParticipant(userId, username, chatId);
         await ctx.reply(`Проверь анкету 👇\n\n${formatAnketa(p)}\n\n${PHRASE_HINT_CONFIRM}`, { reply_markup: confirmAnketaKeyboard() });
         return;
       }
-      const next = getNextEmptyField(p);
       if (!next) {
         await setParticipantStatus(userId, STATUS.FORM_CONFIRM);
         p = await getParticipant(userId, username, chatId);
@@ -576,7 +629,7 @@ export function createBot(): Bot {
         return;
       }
 
-      if (data === 'program' || data === 'conditions') {
+      if (data === 'program') {
         const uid = ctx.callbackQuery.from?.id;
         const chatId = ctx.callbackQuery.message?.chat?.id;
         const username = ctx.callbackQuery.from?.username ?? '';
@@ -593,10 +646,67 @@ export function createBot(): Bot {
         }
         const ev = p.event ?? 'orlyatnik';
         const kb = getKb(ev);
-        const text = data === 'program' ? (kb.PROGRAM_TEXT ?? '') : (kb.CONDITIONS_TEXT ?? '');
+        const text = kb.PROGRAM_TEXT ?? '';
         const menuKb = eventStartKeyboard();
         if (text) await ctx.reply(text, { reply_markup: menuKb });
         await safeAnswer();
+        return;
+      }
+
+      if (data === 'conditions') {
+        const uid = ctx.callbackQuery.from?.id;
+        const chatId = ctx.callbackQuery.message?.chat?.id;
+        const username = ctx.callbackQuery.from?.username ?? '';
+        if (!uid || !chatId) {
+          await safeAnswer();
+          return;
+        }
+        let p: Participant;
+        try {
+          p = await getParticipant(uid, username, chatId);
+        } catch (e) {
+          await safeAnswer();
+          return;
+        }
+        const ev = p.event ?? 'orlyatnik';
+        const kb = getKb(ev);
+        const text = kb.CONDITIONS_TEXT ?? '';
+        const parts = splitTelegramMessage(text);
+        const followKb = conditionsFollowupKeyboard();
+        for (let i = 0; i < parts.length; i++) {
+          const isLast = i === parts.length - 1;
+          await ctx.reply(parts[i], isLast ? { reply_markup: followKb } : {});
+        }
+        await safeAnswer();
+        return;
+      }
+
+      if (data === 'info_menu_home') {
+        const uid = ctx.callbackQuery.from?.id;
+        const chatId = ctx.callbackQuery.message?.chat?.id;
+        const username = ctx.callbackQuery.from?.username ?? '';
+        if (!uid || !chatId) {
+          await safeAnswer();
+          return;
+        }
+        let p: Participant;
+        try {
+          p = await getParticipant(uid, username, chatId);
+        } catch (e) {
+          await safeAnswer();
+          return;
+        }
+        if (p.status !== STATUS.INFO || !(p.event ?? '').trim()) {
+          await safeAnswer();
+          return;
+        }
+        await safeAnswer();
+        const ev = (p.event ?? 'orlyatnik') as 'orlyatnik' | 'pizhamnik';
+        const kbEv = getKb(ev);
+        await ctx.reply(
+          kbEv.START_MESSAGE ?? 'Выбери кнопку ниже или напиши вопрос — с радостью ответим! 🏕✨',
+          { reply_markup: eventStartKeyboard() }
+        );
         return;
       }
 
@@ -1278,10 +1388,7 @@ export function createBot(): Bot {
 
     // /start всегда показывает приветствие и выбор мероприятия (не переходим в меню события по сохранённому event)
     if (text === '/start' || text.startsWith('/start ')) {
-      await ctx.reply(
-        'Привет! 🎉 Рады видеть тебя здесь! Выбери мероприятие — расскажем программу, условия и поможем забронировать место. Есть вопросы? Спрашивай! 🏕✨',
-        { reply_markup: eventChoiceKeyboard() }
-      );
+      await ctx.reply(ROOT_EVENT_CHOICE_MESSAGE, { reply_markup: eventChoiceKeyboard() });
       return;
     }
 
