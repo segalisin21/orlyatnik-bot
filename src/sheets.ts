@@ -203,20 +203,90 @@ async function getSheetRows(sheetName: string): Promise<string[][]> {
   }
 }
 
-/** Get participant by user_id only. Searches Участники then Пижамник. Returns null if not found. */
-export async function getParticipantByUserId(userId: number): Promise<Participant | null> {
+/** Statuses that mean «есть незавершённая бронь» — для выбора активной строки при нескольких user_id. */
+const PIPELINE_STATUSES_FOR_PRIMARY = new Set([
+  'NEW',
+  'INFO',
+  'WAITLIST',
+  'FORM_FILLING',
+  'FORM_CONFIRM',
+  'WAIT_PAYMENT',
+  'PAYMENT_SENT',
+]);
+
+function sheetSourceOrder(s: SheetSource): number {
+  return s === PARTICIPANTS_SHEET_ORLYATNIK ? 0 : 1;
+}
+
+function compareParticipantsNewestFirst(a: Participant, b: Participant): number {
+  const oa = sheetSourceOrder(a.sheetSource ?? PARTICIPANTS_SHEET_ORLYATNIK);
+  const ob = sheetSourceOrder(b.sheetSource ?? PARTICIPANTS_SHEET_ORLYATNIK);
+  if (oa !== ob) return ob - oa;
+  return (b.rowIndex ?? 0) - (a.rowIndex ?? 0);
+}
+
+/** Все строки с этим Telegram user_id (Участники, затем Пижамник). */
+export async function getAllParticipantsByUserId(userId: number): Promise<Participant[]> {
   const uid = String(userId);
   return withRetry(async () => {
+    const out: Participant[] = [];
     for (const sheetName of [PARTICIPANTS_SHEET_ORLYATNIK, PARTICIPANTS_SHEET_PIZHAMNIK] as const) {
       const rows = await getSheetRows(sheetName);
       for (let i = 0; i < rows.length; i++) {
         if (rows[i][0] === uid) {
-          return rowToParticipant(rows[i], i, sheetName);
+          out.push(rowToParticipant(rows[i], i, sheetName));
         }
       }
     }
-    return null;
+    return out;
   });
+}
+
+/**
+ * Какую строку показывать боту: незавершённая бронь (берём нижнюю в листе — последняя активная),
+ * иначе при только CONFIRMED — последняя подтверждённая строка.
+ */
+export function resolvePrimaryParticipant(participants: Participant[]): Participant | null {
+  if (participants.length === 0) return null;
+  const pipeline = participants.filter((p) => PIPELINE_STATUSES_FOR_PRIMARY.has(p.status));
+  if (pipeline.length > 0) {
+    pipeline.sort(compareParticipantsNewestFirst);
+    return pipeline[0]!;
+  }
+  const sorted = [...participants].sort(compareParticipantsNewestFirst);
+  return sorted[0]!;
+}
+
+function findDataRowIndexForParticipant(rows: string[][], uid: string, participant: Participant): number {
+  const sheetRow = participant.rowIndex;
+  if (sheetRow != null && sheetRow >= 2) {
+    const byRow = rows.findIndex((r, idx) => r[0] === uid && idx + 2 === sheetRow);
+    if (byRow >= 0) return byRow;
+  }
+  return rows.findIndex((r) => r[0] === uid);
+}
+
+/** Get participant by user_id only. Searches Участники then Пижамник. Returns null if not found. */
+export async function getParticipantByUserId(userId: number): Promise<Participant | null> {
+  const all = await getAllParticipantsByUserId(userId);
+  return resolvePrimaryParticipant(all);
+}
+
+/** Строка WAIT_PAYMENT с данным payment_id (несколько строк на один user_id). */
+export async function getParticipantByYookassaPayment(userId: number, paymentId: string): Promise<Participant | null> {
+  const all = await getAllParticipantsByUserId(userId);
+  return (
+    all.find((p) => p.status === 'WAIT_PAYMENT' && (p.yookassa_payment_id ?? '') === paymentId) ?? null
+  );
+}
+
+/** Последняя строка с данным статусом (для кнопки подтверждения оплаты в админке). */
+export async function getParticipantLatestByStatus(userId: number, status: string): Promise<Participant | null> {
+  const all = await getAllParticipantsByUserId(userId);
+  const matches = all.filter((p) => p.status === status);
+  if (matches.length === 0) return null;
+  matches.sort(compareParticipantsNewestFirst);
+  return matches[0]!;
 }
 
 /** Get participant by user_id or create new row in Участники (event ''). Idempotent. */
@@ -227,13 +297,10 @@ export async function getOrCreateUser(
 ): Promise<Participant> {
   const uid = String(userId);
   return withRetry(async () => {
-    for (const sheetName of [PARTICIPANTS_SHEET_ORLYATNIK, PARTICIPANTS_SHEET_PIZHAMNIK] as const) {
-      const rows = await getSheetRows(sheetName);
-      for (let i = 0; i < rows.length; i++) {
-        if (rows[i][0] === uid) {
-          return rowToParticipant(rows[i], i, sheetName);
-        }
-      }
+    const existing = await getAllParticipantsByUserId(userId);
+    if (existing.length > 0) {
+      const primary = resolvePrimaryParticipant(existing);
+      if (primary) return primary;
     }
     const sheets = getSheets();
     const now = new Date().toISOString();
@@ -292,6 +359,34 @@ async function getParticipantByUserIdWithRetry(userId: number, maxAttempts = 8):
   return null;
 }
 
+/** Обновить конкретную строку (несколько строк на user_id: крон, ЮKassa, админка). */
+export async function updateParticipantRow(
+  base: Participant,
+  patch: Partial<Omit<Participant, 'user_id' | 'rowIndex'>>
+): Promise<Participant> {
+  const sheetSource = base.sheetSource ?? PARTICIPANTS_SHEET_ORLYATNIK;
+  const sheetRow = base.rowIndex;
+  if (!sheetRow || sheetRow < 2) {
+    throw new Error(`updateParticipantRow: missing rowIndex for user ${base.user_id}`);
+  }
+  return withRetry(async () => {
+    const updated: Participant = {
+      ...base,
+      ...patch,
+      updated_at: new Date().toISOString(),
+    };
+    const sheets = getSheets();
+    const range = `'${sheetSource}'!A${sheetRow}:T${sheetRow}`;
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: env.GOOGLE_SHEET_ID,
+      range,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [participantToRow(updated)] },
+    });
+    return { ...updated, sheetSource };
+  });
+}
+
 export async function updateUserFields(
   userId: number,
   patch: Partial<Omit<Participant, 'user_id' | 'rowIndex'>>
@@ -312,7 +407,7 @@ export async function updateUserFields(
     if (patch.event === 'pizhamnik' && sheetSource === PARTICIPANTS_SHEET_ORLYATNIK) {
       const sheets = getSheets();
       const rows = await getSheetRows(PARTICIPANTS_SHEET_ORLYATNIK);
-      const rowIndex = rows.findIndex((r) => r[0] === uid);
+      const rowIndex = findDataRowIndexForParticipant(rows, uid, current);
       if (rowIndex < 0) throw new Error(`Participant not found in Участники: ${uid}`);
       try {
         await sheets.spreadsheets.values.append({
@@ -377,7 +472,7 @@ export async function updateUserFields(
     if (patch.event === 'orlyatnik' && sheetSource === PARTICIPANTS_SHEET_PIZHAMNIK) {
       const sheets = getSheets();
       const rows = await getSheetRows(PARTICIPANTS_SHEET_PIZHAMNIK);
-      const rowIndex = rows.findIndex((r) => r[0] === uid);
+      const rowIndex = findDataRowIndexForParticipant(rows, uid, current);
       if (rowIndex < 0) throw new Error(`Participant not found in Пижамник: ${uid}`);
       try {
         await sheets.spreadsheets.values.append({
@@ -456,7 +551,7 @@ export async function updateUserFields(
       range: `'${sheetSource}'!A2:T`,
     });
     const rows = (res.data.values ?? []) as string[][];
-    const rowIndex = rows.findIndex((r) => r[0] === uid);
+    const rowIndex = findDataRowIndexForParticipant(rows, uid, current);
     if (rowIndex < 0) throw new Error(`Participant not found: ${uid}`);
     const range = `'${sheetSource}'!A${rowIndex + 2}:T${rowIndex + 2}`;
     await sheets.spreadsheets.values.update({
@@ -466,6 +561,59 @@ export async function updateUserFields(
       requestBody: { values: [participantToRow(updated)] },
     });
     return { ...updated, sheetSource };
+  });
+}
+
+/**
+ * Вторая путёвка Орлятник: добавить новую строку в «Участники», прошлая CONFIRMED не меняется.
+ */
+export async function appendSecondOrlyatnikBookingRow(source: Participant): Promise<Participant> {
+  const uid = source.user_id;
+  return withRetry(async () => {
+    const sheets = getSheets();
+    const now = new Date().toISOString();
+    const newRow: Participant = {
+      user_id: uid,
+      username: source.username || '',
+      chat_id: source.chat_id,
+      status: 'INFO',
+      fio: '',
+      city: '',
+      dob: '',
+      companions: '',
+      phone: '',
+      comment: '',
+      shift: '',
+      payment_proof_file_id: '',
+      final_sent_at: '',
+      updated_at: now,
+      created_at: now,
+      last_reminder_at: '',
+      consent_at: source.consent_at ?? '',
+      yookassa_payment_id: '',
+      event: 'orlyatnik',
+      sheetSource: PARTICIPANTS_SHEET_ORLYATNIK,
+    };
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: env.GOOGLE_SHEET_ID,
+      range: `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A:T`,
+      valueInputOption: 'USER_ENTERED',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values: [participantToRow(newRow)] },
+    });
+    sheetIdsCache = null;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      await new Promise((r) => setTimeout(r, 350 * (attempt + 1)));
+      try {
+        const created = await getParticipantByUserId(Number(uid));
+        if (created && created.status === 'INFO') {
+          return created;
+        }
+      } catch (_) {
+        /* ignore read errors */
+      }
+    }
+    throw new Error(`appendSecondOrlyatnikBookingRow: row not visible after append for user ${uid}`);
   });
 }
 

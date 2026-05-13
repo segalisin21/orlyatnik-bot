@@ -25,8 +25,8 @@ import { getSalesReply, getFormModeReply, reviveAnswer } from './llm.js';
 import { transcribeVoice } from './voice.js';
 import {
   appendLog,
-  updateUserFields,
-  getParticipantByUserId,
+  updateParticipantRow,
+  getParticipantLatestByStatus,
   getParticipantsForBroadcast,
   getAnswerFromStorage,
   saveAnswer,
@@ -1318,13 +1318,13 @@ export function createBot(): Bot {
         await safeAnswer('Неверные данные.');
         return;
       }
-      const p = await getParticipantByUserId(userIdNum);
-      if (!p || p.status !== STATUS.PAYMENT_SENT) {
+      const p = await getParticipantLatestByStatus(userIdNum, STATUS.PAYMENT_SENT);
+      if (!p) {
         await safeAnswer('Уже подтверждено или участник не найден.');
         return;
       }
       const now = new Date().toISOString();
-      const updated = await updateUserFields(userIdNum, { status: STATUS.CONFIRMED, final_sent_at: now });
+      const updated = await updateParticipantRow(p, { status: STATUS.CONFIRMED, final_sent_at: now });
       invalidateCache(userIdNum);
       const kbEv = getKb(updated.event === 'pizhamnik' ? 'pizhamnik' : 'orlyatnik');
       const finalText =

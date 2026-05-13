@@ -3,7 +3,15 @@
  */
 
 import type { Participant } from './sheets.js';
-import { getOrCreateUser, getParticipantByUserId, updateUserFields, appendLog } from './sheets.js';
+import {
+  getOrCreateUser,
+  getParticipantByUserId,
+  getAllParticipantsByUserId,
+  resolvePrimaryParticipant,
+  updateUserFields,
+  appendLog,
+  appendSecondOrlyatnikBookingRow,
+} from './sheets.js';
 import { logger } from './logger.js';
 
 export const STATUS = {
@@ -27,8 +35,6 @@ const VALID_TRANSITIONS: Record<string, Status[]> = {
   [STATUS.FORM_CONFIRM]: [STATUS.WAIT_PAYMENT],
   [STATUS.WAIT_PAYMENT]: [STATUS.PAYMENT_SENT],
   [STATUS.PAYMENT_SENT]: [STATUS.CONFIRMED],
-  /** Вторая путёвка на Орлятник: сброс строки и возврат в меню (см. `startSecondOrlyatnikBooking`). */
-  [STATUS.CONFIRMED]: [STATUS.INFO],
 };
 
 export function canTransition(from: string, to: Status): boolean {
@@ -115,41 +121,38 @@ export async function patchParticipant(
 }
 
 /**
- * Новая бронь тем же Telegram на Орлятнике: очистка анкеты/оплаты, статус INFO.
- * Только `event === 'orlyatnik'`, строка в листе «Участники». Иначе `null`.
+ * Новая бронь тем же Telegram на Орлятнике: новая строка в «Участники», прошлая CONFIRMED не трогаем.
+ * Если уже есть незавершённая бронь (не CONFIRMED) — `null`. Только orlyatnik, не лист «Пижамник».
  */
 export async function startSecondOrlyatnikBooking(userId: number): Promise<Participant | null> {
   return withUserLock(userId, async () => {
-    const existing = getCached(userId) ?? (await getParticipantByUserId(userId));
-    if (!existing || existing.status !== STATUS.CONFIRMED || (existing.event ?? '') !== 'orlyatnik') {
+    const all = await getAllParticipantsByUserId(userId);
+    const primary = resolvePrimaryParticipant(all);
+    if (primary && primary.status !== STATUS.CONFIRMED) {
       return null;
     }
-    if (existing.sheetSource === 'Пижамник') {
+    const confirmedOrl = all.filter(
+      (p) =>
+        p.status === STATUS.CONFIRMED &&
+        (p.event ?? '') === 'orlyatnik' &&
+        (p.sheetSource ?? '') !== 'Пижамник'
+    );
+    if (confirmedOrl.length === 0) {
       return null;
     }
-    const preview = `second_booking shift=${(existing.shift ?? '').slice(0, 80)} final=${(existing.final_sent_at ?? '').slice(0, 24)}`;
+    confirmedOrl.sort((a, b) => (a.rowIndex ?? 0) - (b.rowIndex ?? 0));
+    const source = confirmedOrl[confirmedOrl.length - 1]!;
+    const preview = `second_booking_append shift=${(source.shift ?? '').slice(0, 80)} row=${String(source.rowIndex)}`;
     appendLog({
       timestamp: new Date().toISOString(),
       user_id: String(userId),
       status: STATUS.INFO,
       direction: 'OUT',
-      message_type: 'second_booking_reset',
+      message_type: 'second_booking_append',
       text_preview: preview.slice(0, 500),
     }).catch(() => {});
 
-    const updated = await updateUserFields(userId, {
-      status: STATUS.INFO,
-      fio: '',
-      city: '',
-      dob: '',
-      companions: '',
-      phone: '',
-      comment: '',
-      shift: '',
-      payment_proof_file_id: '',
-      yookassa_payment_id: '',
-      final_sent_at: '',
-    });
+    const updated = await appendSecondOrlyatnikBookingRow(source);
     setCached(userId, updated);
     return updated;
   });

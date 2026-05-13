@@ -98,13 +98,35 @@ export interface YooKassaWebhookPayload {
 
 /**
  * Handle YooKassa HTTP notification. Returns HTTP status code to respond with.
- * On payment.succeeded: find participant by metadata.user_id and yookassa_payment_id, set PAYMENT_SENT, notify admin and user.
+ * On payment.succeeded: find participant row by metadata.user_id and yookassa_payment_id, set PAYMENT_SENT, notify admin and user.
  */
 export async function handleYooKassaWebhook(
   body: YooKassaWebhookPayload,
   deps: {
-    getParticipantByUserId: (userId: number) => Promise<{ user_id: string; chat_id: string; status: string; yookassa_payment_id?: string; event?: string } | null>;
-    updateUserFields: (userId: number, patch: { status: string }) => Promise<unknown>;
+    getParticipantByYookassaPayment: (
+      userId: number,
+      paymentId: string
+    ) => Promise<{
+      user_id: string;
+      chat_id: string;
+      status: string;
+      yookassa_payment_id?: string;
+      event?: string;
+      rowIndex?: number;
+      sheetSource?: string;
+    } | null>;
+    updateParticipantRow: (
+      p: {
+        user_id: string;
+        chat_id: string;
+        status: string;
+        yookassa_payment_id?: string;
+        event?: string;
+        rowIndex?: number;
+        sheetSource?: string;
+      },
+      patch: { status: string }
+    ) => Promise<unknown>;
     invalidateCache: (userId: number) => void;
     sendToUser: (chatId: string, text: string) => Promise<void>;
     sendToAdmin: (text: string, confirmUserId?: number) => Promise<void>;
@@ -125,15 +147,12 @@ export async function handleYooKassaWebhook(
     return 200;
   }
 
-  const p = await deps.getParticipantByUserId(userId);
+  const p = await deps.getParticipantByYookassaPayment(userId, paymentId);
   if (!p || p.status !== deps.STATUS.WAIT_PAYMENT) {
     return 200;
   }
-  if (p.yookassa_payment_id !== paymentId) {
-    return 200;
-  }
 
-  await deps.updateUserFields(userId, { status: deps.STATUS.PAYMENT_SENT });
+  await deps.updateParticipantRow(p, { status: deps.STATUS.PAYMENT_SENT });
   deps.invalidateCache(userId);
 
   try {

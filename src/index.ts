@@ -12,8 +12,8 @@ import { createBot } from './bot.js';
 import {
   getParticipantsPendingFinalSend,
   getParticipantsForReminders,
-  updateUserFields,
-  getParticipantByUserId,
+  updateParticipantRow,
+  getParticipantByYookassaPayment,
   getParticipantsForPizhamnikReminder,
   type Participant,
 } from './sheets.js';
@@ -62,18 +62,38 @@ async function sendFinalToParticipant(p: Participant): Promise<void> {
   await bot.api.sendMessage(p.chat_id, finalText);
 }
 
+/** При нескольких строках на один chat_id — одно сообщение, обновляем все строки. */
+function sortParticipantsNewestFirst(a: Participant, b: Participant): number {
+  const sheetRank = (s: string | undefined) => (s === 'Пижамник' ? 1 : 0);
+  const oa = sheetRank(a.sheetSource);
+  const ob = sheetRank(b.sheetSource);
+  if (oa !== ob) return ob - oa;
+  return (b.rowIndex ?? 0) - (a.rowIndex ?? 0);
+}
+
 async function cronJob(): Promise<void> {
   try {
     const list = await getParticipantsPendingFinalSend();
+    const byChat = new Map<string, Participant[]>();
     for (const p of list) {
+      const cid = p.chat_id?.trim();
+      if (!cid) continue;
+      if (!byChat.has(cid)) byChat.set(cid, []);
+      byChat.get(cid)!.push(p);
+    }
+    for (const group of byChat.values()) {
       try {
-        await sendFinalToParticipant(p);
+        const sorted = [...group].sort(sortParticipantsNewestFirst);
+        const first = sorted[0]!;
+        await sendFinalToParticipant(first);
         const now = new Date().toISOString();
-        await updateUserFields(Number(p.user_id), { final_sent_at: now });
-        invalidateCache(Number(p.user_id));
-        logger.info('Final message sent', { user_id: p.user_id });
+        for (const p of group) {
+          await updateParticipantRow(p, { final_sent_at: now });
+        }
+        invalidateCache(Number(first.user_id));
+        logger.info('Final message sent', { user_id: first.user_id, rows: group.length });
       } catch (e) {
-        logger.error('Cron: send final failed', { user_id: p.user_id, error: String(e) });
+        logger.error('Cron: send final failed', { user_id: group[0]?.user_id, error: String(e) });
       }
     }
   } catch (e) {
@@ -88,17 +108,28 @@ async function reminderJob(): Promise<void> {
     const reminders = (p: { status: string; event?: string }) =>
       (p.event === 'pizhamnik' ? REMINDER_PIZHAMNIK_BY_STATUS : REMINDER_BY_STATUS)[p.status] ??
       (p.event === 'pizhamnik' ? REMINDER_PIZHAMNIK_BY_STATUS.NEW : REMINDER_BY_STATUS.NEW);
+    const byChat = new Map<string, Participant[]>();
     for (const p of list) {
+      const cid = p.chat_id?.trim();
+      if (!cid) continue;
+      if (!byChat.has(cid)) byChat.set(cid, []);
+      byChat.get(cid)!.push(p);
+    }
+    for (const group of byChat.values()) {
       try {
-        const text = reminders(p);
-        await bot.api.sendMessage(p.chat_id, text);
+        const sorted = [...group].sort(sortParticipantsNewestFirst);
+        const p0 = sorted[0]!;
+        const text = reminders(p0);
+        await bot.api.sendMessage(p0.chat_id, text);
         const now = new Date().toISOString();
-        await updateUserFields(Number(p.user_id), { last_reminder_at: now });
-        invalidateCache(Number(p.user_id));
-        logger.info('Reminder sent', { user_id: p.user_id, status: p.status });
+        for (const p of group) {
+          await updateParticipantRow(p, { last_reminder_at: now });
+        }
+        invalidateCache(Number(p0.user_id));
+        logger.info('Reminder sent', { user_id: p0.user_id, status: p0.status, rows: group.length });
         await new Promise((r) => setTimeout(r, delayMs));
       } catch (e) {
-        logger.error('Reminder send failed', { user_id: p.user_id, error: String(e) });
+        logger.error('Reminder send failed', { user_id: group[0]?.user_id, error: String(e) });
       }
     }
   } catch (e) {
@@ -152,8 +183,8 @@ async function main(): Promise<void> {
   app.post('/yookassa-webhook', async (req, res) => {
     try {
       const status = await handleYooKassaWebhook(req.body, {
-        getParticipantByUserId,
-        updateUserFields: (userId, patch) => updateUserFields(userId, patch),
+        getParticipantByYookassaPayment,
+        updateParticipantRow: (p, patch) => updateParticipantRow(p as Participant, patch),
         invalidateCache,
         sendToUser: async (chatId, text) => {
           await bot.api.sendMessage(chatId, text);
