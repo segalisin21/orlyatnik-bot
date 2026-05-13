@@ -3,7 +3,7 @@
  */
 
 import type { Participant } from './sheets.js';
-import { getOrCreateUser, getParticipantByUserId, updateUserFields } from './sheets.js';
+import { getOrCreateUser, getParticipantByUserId, updateUserFields, appendLog } from './sheets.js';
 import { logger } from './logger.js';
 
 export const STATUS = {
@@ -27,7 +27,8 @@ const VALID_TRANSITIONS: Record<string, Status[]> = {
   [STATUS.FORM_CONFIRM]: [STATUS.WAIT_PAYMENT],
   [STATUS.WAIT_PAYMENT]: [STATUS.PAYMENT_SENT],
   [STATUS.PAYMENT_SENT]: [STATUS.CONFIRMED],
-  [STATUS.CONFIRMED]: [],
+  /** Вторая путёвка на Орлятник: сброс строки и возврат в меню (см. `startSecondOrlyatnikBooking`). */
+  [STATUS.CONFIRMED]: [STATUS.INFO],
 };
 
 export function canTransition(from: string, to: Status): boolean {
@@ -108,6 +109,47 @@ export async function patchParticipant(
 ): Promise<Participant> {
   return withUserLock(userId, async () => {
     const updated = await updateUserFields(userId, patch);
+    setCached(userId, updated);
+    return updated;
+  });
+}
+
+/**
+ * Новая бронь тем же Telegram на Орлятнике: очистка анкеты/оплаты, статус INFO.
+ * Только `event === 'orlyatnik'`, строка в листе «Участники». Иначе `null`.
+ */
+export async function startSecondOrlyatnikBooking(userId: number): Promise<Participant | null> {
+  return withUserLock(userId, async () => {
+    const existing = getCached(userId) ?? (await getParticipantByUserId(userId));
+    if (!existing || existing.status !== STATUS.CONFIRMED || (existing.event ?? '') !== 'orlyatnik') {
+      return null;
+    }
+    if (existing.sheetSource === 'Пижамник') {
+      return null;
+    }
+    const preview = `second_booking shift=${(existing.shift ?? '').slice(0, 80)} final=${(existing.final_sent_at ?? '').slice(0, 24)}`;
+    appendLog({
+      timestamp: new Date().toISOString(),
+      user_id: String(userId),
+      status: STATUS.INFO,
+      direction: 'OUT',
+      message_type: 'second_booking_reset',
+      text_preview: preview.slice(0, 500),
+    }).catch(() => {});
+
+    const updated = await updateUserFields(userId, {
+      status: STATUS.INFO,
+      fio: '',
+      city: '',
+      dob: '',
+      companions: '',
+      phone: '',
+      comment: '',
+      shift: '',
+      payment_proof_file_id: '',
+      yookassa_payment_id: '',
+      final_sent_at: '',
+    });
     setCached(userId, updated);
     return updated;
   });

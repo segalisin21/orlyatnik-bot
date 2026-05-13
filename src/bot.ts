@@ -2,7 +2,7 @@
  * Telegram bot: handlers for text, voice, photo, document. FSM-driven, LLM, Sheets.
  */
 
-import { Bot, InlineKeyboard } from 'grammy';
+import { Bot, InlineKeyboard, type Context } from 'grammy';
 import { env, isAdmin, ROOT_EVENT_CHOICE_MESSAGE, FEATURE_PIZHAMNIK_UI_ENABLED } from './config.js';
 import { getKb, updateConfigKey, EDITABLE_KEYS, EDITABLE_KEYS_PIZHAMNIK, getShiftsList } from './runtime-config.js';
 import { collectProgramPhotoUrls, sendProgramPhotosOnly } from './send-program-photos.js';
@@ -17,6 +17,8 @@ import {
   isUpdateProcessed,
   markUpdateProcessed,
   STATUS,
+  startSecondOrlyatnikBooking,
+  invalidateCache,
   type FormField,
 } from './fsm.js';
 import { getSalesReply, getFormModeReply, reviveAnswer } from './llm.js';
@@ -31,7 +33,6 @@ import {
   normalizeQuestion,
   getConfirmedCount,
 } from './sheets.js';
-import { invalidateCache } from './fsm.js';
 import type { Participant } from './sheets.js';
 import { createPayment, isYooKassaEnabled } from './yookassa.js';
 
@@ -198,6 +199,49 @@ export function createBot(): Bot {
     }
   }
 
+  /** Начало анкеты/согласия после «Забронировать» или фразы (без проверки CONFIRMED — её делает вызывающий). */
+  async function runBookPlaceFormStart(
+    ctx: Context,
+    uid: number,
+    chatId: number,
+    username: string,
+    p: Participant
+  ): Promise<void> {
+    const evKb = getKb(p.event || 'orlyatnik');
+    if (evKb.REGISTRATION_CLOSED) {
+      await ctx.reply('Регистрация на это мероприятие сейчас закрыта. Если что-то изменится — напишем! 🙌');
+      return;
+    }
+    if ((p.event ?? '') === 'pizhamnik') {
+      const limit = evKb.PLACES_LIMIT ?? 21;
+      const count = await getConfirmedCount('pizhamnik');
+      if (count >= limit) {
+        const waitlistKb = new InlineKeyboard().text('Записаться в лист ожидания', 'waitlist_yes');
+        await ctx.reply(evKb.PLACES_FULL_MESSAGE ?? '', { reply_markup: waitlistKb });
+        return;
+      }
+    }
+    if (!p.consent_at?.trim()) {
+      const consentText = getKb(p.event).CONSENT_PD_TEXT;
+      const consentKeyboard = new InlineKeyboard().text('Согласен на обработку персональных данных', 'consent_ok');
+      await ctx.reply(consentText, { reply_markup: consentKeyboard });
+      return;
+    }
+    await setParticipantStatus(uid, STATUS.FORM_FILLING);
+    let p2 = await getParticipant(uid, username, chatId);
+    const next = getNextEmptyField(p2);
+    if (!next) {
+      await setParticipantStatus(uid, STATUS.FORM_CONFIRM);
+      p2 = await getParticipant(uid, username, chatId);
+      await ctx.reply(`Проверь анкету 👇\n\n${formatAnketa(p2)}\n\n${PHRASE_HINT_CONFIRM}`, {
+        reply_markup: confirmAnketaKeyboard(),
+      });
+      return;
+    }
+    const prompt = next === 'shift' ? buildShiftPrompt(p2.event) : getFieldPrompts(p2.event)[next];
+    await ctx.reply(prompt, next === 'shift' ? { reply_markup: getShiftKeyboard(p2.event) } : {});
+  }
+
   const adminBroadcastPending = new Map<number, { audience: 'all' | 'CONFIRMED' | 'waiting' }>();
   const adminSettingsPending = new Map<number, { key: string; event?: string }>();
 
@@ -217,7 +261,7 @@ export function createBot(): Bot {
 
   /** Shared text/voice handler: CONFIRMED, form flow, BOOK, shift choice, or LLM + answer storage. */
   async function handleUserText(
-    ctx: { reply: (text: string, opts?: { reply_markup?: InlineKeyboard }) => Promise<unknown> },
+    ctx: Context,
     userId: number,
     chatId: number,
     username: string,
@@ -357,9 +401,24 @@ export function createBot(): Bot {
         }
       }
 
-      await ctx.reply(
-        `Ты уже в списке!\n\nЧат участников: ${env.CHAT_INVITE_LINK || '—'}\nМенеджер: @${env.MANAGER_TG_USERNAME}`
-      );
+      if (ev === 'orlyatnik' && PHRASE_BOOK.test(text)) {
+        const reset = await startSecondOrlyatnikBooking(userId);
+        if (reset) {
+          const p2 = await getParticipant(userId, username, chatId);
+          await runBookPlaceFormStart(ctx, userId, chatId, username, p2);
+          return;
+        }
+      }
+
+      const base = `Ты уже в списке!\n\nЧат участников: ${env.CHAT_INVITE_LINK || '—'}\nМенеджер: @${env.MANAGER_TG_USERNAME}`;
+      if (ev === 'orlyatnik') {
+        await ctx.reply(
+          `${base}\n\nОформить ещё одну путёвку (другая смена или для другого человека — укажешь в анкете): нажми «🔥 Забронировать место» ниже или напиши, например: «Хочу забронировать».`,
+          { reply_markup: eventStartKeyboard() }
+        );
+      } else {
+        await ctx.reply(base);
+      }
       return;
     }
 
@@ -483,41 +542,7 @@ export function createBot(): Bot {
     }
 
     if ((p.status === STATUS.NEW || p.status === STATUS.INFO) && PHRASE_BOOK.test(text)) {
-      if (evKb.REGISTRATION_CLOSED) {
-        await ctx.reply('Регистрация на это мероприятие сейчас закрыта. Если что-то изменится — напишем! 🙌');
-        return;
-      }
-      if (ev === 'pizhamnik') {
-        const limit = evKb.PLACES_LIMIT ?? 21;
-        const count = await getConfirmedCount('pizhamnik');
-        if (count >= limit) {
-          const waitlistKb = new InlineKeyboard().text('Записаться в лист ожидания', 'waitlist_yes');
-          await ctx.reply(evKb.PLACES_FULL_MESSAGE ?? '', { reply_markup: waitlistKb });
-          return;
-        }
-      }
-      if (!p.consent_at?.trim()) {
-        const consentText = evKb.CONSENT_PD_TEXT;
-        const consentKb = new InlineKeyboard().text('Согласен на обработку персональных данных', 'consent_ok');
-        await ctx.reply(consentText, { reply_markup: consentKb });
-        return;
-      }
-      await setParticipantStatus(userId, STATUS.FORM_FILLING);
-      p = await getParticipant(userId, username, chatId);
-      const next = getNextEmptyField(p);
-      if (!next) {
-        await setParticipantStatus(userId, STATUS.FORM_CONFIRM);
-        p = await getParticipant(userId, username, chatId);
-        await ctx.reply(`Проверь анкету 👇\n\n${formatAnketa(p)}\n\n${PHRASE_HINT_CONFIRM}`, {
-          reply_markup: confirmAnketaKeyboard(),
-        });
-        return;
-      }
-      const prompt =
-        next === 'shift'
-          ? buildShiftPrompt(ev)
-          : getFieldPrompts(ev)[next];
-      await ctx.reply(prompt, next === 'shift' ? { reply_markup: getShiftKeyboard(ev) } : {});
+      await runBookPlaceFormStart(ctx, userId, chatId, username, p);
       return;
     }
 
@@ -767,46 +792,22 @@ export function createBot(): Bot {
           await safeAnswer('Ошибка, попробуй ещё раз.');
           return;
         }
-        const evKb = getKb(p.event || 'orlyatnik');
-        if (evKb.REGISTRATION_CLOSED) {
-          await ctx.reply('Регистрация на это мероприятие сейчас закрыта. Если что-то изменится — напишем! 🙌');
+        if (p.status === STATUS.CONFIRMED && (p.event ?? '') === 'pizhamnik') {
+          await ctx.reply(
+            `Вторая путёвка на Пижамник с тем же аккаунтом — напиши менеджеру @${env.MANAGER_TG_USERNAME}, оформим вручную.`
+          );
           await safeAnswer();
           return;
         }
-        if ((p.event ?? '') === 'pizhamnik') {
-          const limit = evKb.PLACES_LIMIT ?? 21;
-          const count = await getConfirmedCount('pizhamnik');
-          if (count >= limit) {
-            const waitlistKb = new InlineKeyboard().text('Записаться в лист ожидания', 'waitlist_yes');
-            await ctx.reply(evKb.PLACES_FULL_MESSAGE ?? '', { reply_markup: waitlistKb });
-            await safeAnswer();
+        if (p.status === STATUS.CONFIRMED && (p.event ?? '') === 'orlyatnik') {
+          const reset = await startSecondOrlyatnikBooking(uid);
+          if (!reset) {
+            await safeAnswer('Не удалось начать новую бронь. Напиши менеджеру.');
             return;
           }
-        }
-        if (!p.consent_at?.trim()) {
-          const consentText = getKb(p.event).CONSENT_PD_TEXT;
-          const consentKeyboard = new InlineKeyboard().text('Согласен на обработку персональных данных', 'consent_ok');
-          await ctx.reply(consentText, { reply_markup: consentKeyboard });
-          await safeAnswer('Принято');
-          return;
-        }
-        await setParticipantStatus(uid, STATUS.FORM_FILLING);
-        p = await getParticipant(uid, username, chatId);
-        const next = getNextEmptyField(p);
-        if (!next) {
-          await setParticipantStatus(uid, STATUS.FORM_CONFIRM);
           p = await getParticipant(uid, username, chatId);
-          await ctx.reply(`Проверь анкету 👇\n\n${formatAnketa(p)}\n\n${PHRASE_HINT_CONFIRM}`, {
-            reply_markup: confirmAnketaKeyboard(),
-          });
-          await safeAnswer('Принято');
-          return;
         }
-        const prompt =
-          next === 'shift'
-            ? buildShiftPrompt(p.event)
-            : getFieldPrompts(p.event)[next];
-        await ctx.reply(prompt, next === 'shift' ? { reply_markup: getShiftKeyboard(p.event) } : {});
+        await runBookPlaceFormStart(ctx, uid, chatId, username, p);
         await safeAnswer('Принято');
         return;
       }
