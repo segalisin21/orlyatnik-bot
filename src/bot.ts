@@ -5,7 +5,7 @@
 import { Bot, InlineKeyboard } from 'grammy';
 import { env, isAdmin, ROOT_EVENT_CHOICE_MESSAGE, FEATURE_PIZHAMNIK_UI_ENABLED } from './config.js';
 import { getKb, updateConfigKey, EDITABLE_KEYS, EDITABLE_KEYS_PIZHAMNIK, getShiftsList } from './runtime-config.js';
-import { collectBookingConfirmPhotoUrls, sendBookingConfirmedWithPhotos } from './send-booking-confirm.js';
+import { collectProgramPhotoUrls, sendProgramPhotosOnly } from './send-program-photos.js';
 import { logger } from './logger.js';
 import {
   getParticipant,
@@ -681,9 +681,16 @@ export function createBot(): Bot {
         }
         const ev = p.event ?? 'orlyatnik';
         const kb = getKb(ev);
-        const text = kb.PROGRAM_TEXT ?? '';
         const menuKb = eventStartKeyboard();
-        if (text) await ctx.reply(text, { reply_markup: menuKb });
+        const photos = collectProgramPhotoUrls(kb as unknown as Record<string, unknown>);
+        let ok = false;
+        if (photos.length > 0) {
+          ok = await sendProgramPhotosOnly(bot.api, chatId, photos, menuKb);
+        }
+        if (!ok) {
+          const text = kb.PROGRAM_TEXT ?? '';
+          if (text) await ctx.reply(text, { reply_markup: menuKb });
+        }
         await safeAnswer();
         return;
       }
@@ -1323,8 +1330,7 @@ export function createBot(): Bot {
         updated.event === 'pizhamnik' && (kbEv as { AFTER_RECEIPT_MESSAGE?: string }).AFTER_RECEIPT_MESSAGE
           ? (kbEv as { AFTER_RECEIPT_MESSAGE: string }).AFTER_RECEIPT_MESSAGE
           : `Ты в списке!\n\nЧат участников: ${env.CHAT_INVITE_LINK || '—'}\nМенеджер: @${env.MANAGER_TG_USERNAME}`;
-      const photos = collectBookingConfirmPhotoUrls(kbEv as unknown as Record<string, unknown>);
-      await sendBookingConfirmedWithPhotos(bot.api, String(updated.chat_id), finalText, photos);
+      await bot.api.sendMessage(updated.chat_id, finalText);
       await safeAnswer('Оплата подтверждена');
       const msg = ctx.callbackQuery.message;
       const adminChatId = msg?.chat?.id ?? adminChatIds()[0];

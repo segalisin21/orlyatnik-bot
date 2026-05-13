@@ -20,7 +20,6 @@ import {
 import { invalidateCache, STATUS } from './fsm.js';
 import { handleYooKassaWebhook } from './yookassa.js';
 import { InlineKeyboard } from 'grammy';
-import { collectBookingConfirmPhotoUrls, sendBookingConfirmedWithPhotos } from './send-booking-confirm.js';
 
 let bot: ReturnType<typeof createBot>;
 
@@ -60,8 +59,7 @@ async function sendFinalToParticipant(p: Participant): Promise<void> {
     p.event === 'pizhamnik' && kb.AFTER_RECEIPT_MESSAGE?.trim()
       ? kb.AFTER_RECEIPT_MESSAGE.trim()
       : `Ты в списке!\n\nЧат участников: ${env.CHAT_INVITE_LINK || '—'}\nМенеджер: @${env.MANAGER_TG_USERNAME}`;
-  const photos = collectBookingConfirmPhotoUrls(kb as unknown as Record<string, unknown>);
-  await sendBookingConfirmedWithPhotos(bot.api, p.chat_id, finalText, photos);
+  await bot.api.sendMessage(p.chat_id, finalText);
 }
 
 async function cronJob(): Promise<void> {

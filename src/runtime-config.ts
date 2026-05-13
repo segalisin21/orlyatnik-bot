@@ -23,10 +23,10 @@ export interface RuntimeKb {
   MANAGER_FOR_COMPLEX: string;
   MEDIA_CHANNEL: string;
   AFTER_PAYMENT_INSTRUCTION: string;
-  /** Альбом после подтверждения брони (HTTPS URL из листа «Настройки»). */
-  BOOKING_CONFIRM_PHOTO_1?: string;
-  BOOKING_CONFIRM_PHOTO_2?: string;
-  BOOKING_CONFIRM_PHOTO_3?: string;
+  /** URL фото для кнопки «Узнать программу» (лист «Настройки»). */
+  PROGRAM_PHOTO_1?: string;
+  PROGRAM_PHOTO_2?: string;
+  PROGRAM_PHOTO_3?: string;
   DEFAULT_SHIFT: string;
   AVAILABLE_SHIFTS: string;
   OBJECTION_PRICE: string;
@@ -165,7 +165,10 @@ export const EDITABLE_KEYS: { key: string; label: string }[] = [
   { key: 'DEFAULT_SHIFT', label: 'Смена по умолчанию' },
   { key: 'AVAILABLE_SHIFTS', label: 'Список смен (через запятую)' },
   { key: 'START_MESSAGE', label: 'Приветствие после выбора' },
-  { key: 'PROGRAM_TEXT', label: 'Текст: программа' },
+  { key: 'PROGRAM_TEXT', label: 'Текст: программа (если нет фото)' },
+  { key: 'PROGRAM_PHOTO_1', label: 'URL фото программы 1' },
+  { key: 'PROGRAM_PHOTO_2', label: 'URL фото программы 2' },
+  { key: 'PROGRAM_PHOTO_3', label: 'URL фото программы 3' },
   { key: 'CONDITIONS_TEXT', label: 'Текст: условия и стоимость' },
   { key: 'PRICE', label: 'Цена (₽)' },
   { key: 'DEPOSIT', label: 'Задаток (₽)' },
@@ -193,7 +196,10 @@ export const EDITABLE_KEYS_PIZHAMNIK: { key: string; label: string }[] = [
   { key: 'DATES', label: 'Даты заезда/выезда' },
   { key: 'NEXT_SHIFT_TEXT', label: 'Ближайшая смена (даты)' },
   { key: 'START_MESSAGE', label: 'Приветствие /start' },
-  { key: 'PROGRAM_TEXT', label: 'Текст: программа' },
+  { key: 'PROGRAM_TEXT', label: 'Текст: программа (если нет фото)' },
+  { key: 'PROGRAM_PHOTO_1', label: 'URL фото программы 1' },
+  { key: 'PROGRAM_PHOTO_2', label: 'URL фото программы 2' },
+  { key: 'PROGRAM_PHOTO_3', label: 'URL фото программы 3' },
   { key: 'CONDITIONS_TEXT', label: 'Текст: условия и стоимость' },
   { key: 'PRICE', label: 'Цена (₽)' },
   { key: 'DEPOSIT', label: 'Задаток (₽)' },
