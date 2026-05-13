@@ -49,6 +49,11 @@ export interface RuntimeKb {
   WAITLIST_CONFIRMED_MESSAGE?: string;
   CHECKIN_CHECKOUT?: string;
   EVENT_DATE?: string;
+  /** Вторая путёвка Орлятник: подписи (лист «Настройки»). */
+  SECOND_BOOKING_FINAL_BTN?: string;
+  SECOND_BOOKING_WHO_PROMPT?: string;
+  SECOND_BOOKING_SELF_BTN?: string;
+  SECOND_BOOKING_OTHER_BTN?: string;
 }
 
 /** Дефолты вопросов анкеты (лист «Настройки»: FIELD_PROMPT_*). */
@@ -183,6 +188,10 @@ export const EDITABLE_KEYS: { key: string; label: string }[] = [
   { key: 'MEDIA_CHANNEL', label: 'Ссылка на фото/видео' },
   { key: 'AFTER_PAYMENT_INSTRUCTION', label: 'Инструкция после оплаты' },
   { key: 'CONSENT_PD_TEXT', label: 'Текст согласия на обработку ПД' },
+  { key: 'SECOND_BOOKING_FINAL_BTN', label: 'Кнопка: ещё путёвка (после списка)' },
+  { key: 'SECOND_BOOKING_WHO_PROMPT', label: 'Текст: для себя или для другого' },
+  { key: 'SECOND_BOOKING_SELF_BTN', label: 'Кнопка: для себя' },
+  { key: 'SECOND_BOOKING_OTHER_BTN', label: 'Кнопка: для другого' },
   { key: 'FIELD_PROMPT_fio', label: 'Вопрос: ФИО' },
   { key: 'FIELD_PROMPT_city', label: 'Вопрос: город' },
   { key: 'FIELD_PROMPT_dob', label: 'Вопрос: дата рождения' },

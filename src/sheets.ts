@@ -9,6 +9,8 @@ import { logger } from './logger.js';
 
 const PARTICIPANTS_SHEET_ORLYATNIK = 'Участники';
 const PARTICIPANTS_SHEET_PIZHAMNIK = 'Пижамник';
+/** Последняя колонка строки участника в Google Sheets (A..V: +booking_scope, +booking_ref). */
+const PARTICIPANT_LAST_COL = 'V';
 const LOGS_SHEET = 'Логи';
 const CONFIG_SHEET = 'Настройки';
 const CONFIG_SHEET_PIZHAMNIK = 'Настройки Пижамник';
@@ -17,7 +19,7 @@ const ANSWERS_MAX_ROWS = 500;
 const PARTICIPANT_HEADERS = [
   'user_id', 'username', 'chat_id', 'status', 'fio', 'city', 'dob', 'companions',
   'phone', 'comment', 'shift', 'payment_proof_file_id', 'final_sent_at', 'updated_at', 'created_at', 'last_reminder_at',
-  'consent_at', 'yookassa_payment_id', 'event', 'Согласие',
+  'consent_at', 'yookassa_payment_id', 'event', 'Согласие', 'booking_scope', 'booking_ref',
 ];
 const LOG_HEADERS = ['timestamp', 'user_id', 'status', 'direction', 'message_type', 'text_preview', 'raw_json'];
 
@@ -45,6 +47,10 @@ export interface Participant {
   yookassa_payment_id?: string;
   /** Event slug: 'orlyatnik' | 'pizhamnik' or '' before choice. */
   event?: string;
+  /** Вторая и далее бронь: `self` — для себя (копия анкеты), `other` — для другого человека. */
+  booking_scope?: string;
+  /** Человекочитаемый id брони внутри аккаунта (например 12345-2). */
+  booking_ref?: string;
   rowIndex?: number;
   /** Which sheet the row is in (for updates). */
   sheetSource?: 'Участники' | 'Пижамник';
@@ -150,6 +156,8 @@ function rowToParticipant(row: string[], rowIndex: number, sheetSource?: SheetSo
     consent_at: row[16] ?? '',
     yookassa_payment_id: row[17] ?? '',
     event: row[18] ?? '',
+    booking_scope: row[20] ?? '',
+    booking_ref: row[21] ?? '',
     rowIndex: rowIndex + 2,
   };
   if (sheetSource) p.sheetSource = sheetSource;
@@ -182,6 +190,8 @@ function participantToRow(p: Participant): string[] {
     p.yookassa_payment_id ?? '',
     p.event ?? '',
     (p.consent_at?.trim() ? 'Да' : ''),
+    p.booking_scope ?? '',
+    p.booking_ref ?? '',
   ];
 }
 
@@ -191,7 +201,7 @@ async function getSheetRows(sheetName: string): Promise<string[][]> {
   try {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${sheetName}'!A2:T`,
+      range: `'${sheetName}'!A2:${PARTICIPANT_LAST_COL}`,
     });
     return (res.data.values ?? []) as string[][];
   } catch (e: unknown) {
@@ -324,11 +334,13 @@ export async function getOrCreateUser(
       consent_at: '',
       yookassa_payment_id: '',
       event: '',
+      booking_scope: '',
+      booking_ref: '',
       sheetSource: PARTICIPANTS_SHEET_ORLYATNIK,
     };
     await sheets.spreadsheets.values.append({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A:T`,
+      range: `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A:${PARTICIPANT_LAST_COL}`,
       valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values: [participantToRow(newRow)] },
@@ -376,7 +388,7 @@ export async function updateParticipantRow(
       updated_at: new Date().toISOString(),
     };
     const sheets = getSheets();
-    const range = `'${sheetSource}'!A${sheetRow}:T${sheetRow}`;
+    const range = `'${sheetSource}'!A${sheetRow}:${PARTICIPANT_LAST_COL}${sheetRow}`;
     await sheets.spreadsheets.values.update({
       spreadsheetId: env.GOOGLE_SHEET_ID,
       range,
@@ -412,7 +424,7 @@ export async function updateUserFields(
       try {
         await sheets.spreadsheets.values.append({
           spreadsheetId: env.GOOGLE_SHEET_ID,
-          range: `'${PARTICIPANTS_SHEET_PIZHAMNIK}'!A:T`,
+          range: `'${PARTICIPANTS_SHEET_PIZHAMNIK}'!A:${PARTICIPANT_LAST_COL}`,
           valueInputOption: 'USER_ENTERED',
           insertDataOption: 'INSERT_ROWS',
           requestBody: { values: [participantToRow({ ...updated, event: 'pizhamnik' })] },
@@ -441,7 +453,7 @@ export async function updateUserFields(
           }
         } catch (deleteErr) {
           logger.error('Sheet move: append succeeded but delete failed — clearing old row to prevent duplicate', { userId: uid, error: String(deleteErr) });
-          const clearRange = `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A${rowIndex + 2}:T${rowIndex + 2}`;
+          const clearRange = `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A${rowIndex + 2}:${PARTICIPANT_LAST_COL}${rowIndex + 2}`;
           await sheets.spreadsheets.values.update({
             spreadsheetId: env.GOOGLE_SHEET_ID,
             range: clearRange,
@@ -455,7 +467,7 @@ export async function updateUserFields(
         const msg = String((moveErr as { message?: string })?.message ?? moveErr);
         if (msg.includes('Unable to parse range') || msg.includes('not found') || msg.includes('404')) {
           logger.warn('Sheet Пижамник missing or invalid, keeping participant in Участники with event pizhamnik', { userId: uid });
-          const range = `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A${rowIndex + 2}:T${rowIndex + 2}`;
+          const range = `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A${rowIndex + 2}:${PARTICIPANT_LAST_COL}${rowIndex + 2}`;
           await sheets.spreadsheets.values.update({
             spreadsheetId: env.GOOGLE_SHEET_ID,
             range,
@@ -477,7 +489,7 @@ export async function updateUserFields(
       try {
         await sheets.spreadsheets.values.append({
           spreadsheetId: env.GOOGLE_SHEET_ID,
-          range: `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A:T`,
+          range: `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A:${PARTICIPANT_LAST_COL}`,
           valueInputOption: 'USER_ENTERED',
           insertDataOption: 'INSERT_ROWS',
           requestBody: { values: [participantToRow({ ...updated, event: 'orlyatnik' })] },
@@ -509,7 +521,7 @@ export async function updateUserFields(
             'Sheet move (Пижамник → Участники): append succeeded but delete failed — clearing old row to prevent duplicate',
             { userId: uid, error: String(deleteErr) }
           );
-          const clearRange = `'${PARTICIPANTS_SHEET_PIZHAMNIK}'!A${rowIndex + 2}:T${rowIndex + 2}`;
+          const clearRange = `'${PARTICIPANTS_SHEET_PIZHAMNIK}'!A${rowIndex + 2}:${PARTICIPANT_LAST_COL}${rowIndex + 2}`;
           await sheets.spreadsheets.values
             .update({
               spreadsheetId: env.GOOGLE_SHEET_ID,
@@ -532,7 +544,7 @@ export async function updateUserFields(
             'Sheet Участники missing or invalid, keeping participant in Пижамник with event orlyatnik',
             { userId: uid }
           );
-          const range = `'${PARTICIPANTS_SHEET_PIZHAMNIK}'!A${rowIndex + 2}:T${rowIndex + 2}`;
+          const range = `'${PARTICIPANTS_SHEET_PIZHAMNIK}'!A${rowIndex + 2}:${PARTICIPANT_LAST_COL}${rowIndex + 2}`;
           await sheets.spreadsheets.values.update({
             spreadsheetId: env.GOOGLE_SHEET_ID,
             range,
@@ -548,12 +560,12 @@ export async function updateUserFields(
     const sheets = getSheets();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${sheetSource}'!A2:T`,
+      range: `'${sheetSource}'!A2:${PARTICIPANT_LAST_COL}`,
     });
     const rows = (res.data.values ?? []) as string[][];
     const rowIndex = findDataRowIndexForParticipant(rows, uid, current);
     if (rowIndex < 0) throw new Error(`Participant not found: ${uid}`);
-    const range = `'${sheetSource}'!A${rowIndex + 2}:T${rowIndex + 2}`;
+    const range = `'${sheetSource}'!A${rowIndex + 2}:${PARTICIPANT_LAST_COL}${rowIndex + 2}`;
     await sheets.spreadsheets.values.update({
       spreadsheetId: env.GOOGLE_SHEET_ID,
       range,
@@ -564,10 +576,33 @@ export async function updateUserFields(
   });
 }
 
+/** Счётчик строк на листе «Участники» для ref вида user_id-N. */
+export async function computeNextBookingRef(userId: number): Promise<string> {
+  const uid = String(userId);
+  const all = await getAllParticipantsByUserId(userId);
+  const n = all.filter((p) => (p.sheetSource ?? PARTICIPANTS_SHEET_ORLYATNIK) === PARTICIPANTS_SHEET_ORLYATNIK).length;
+  return `${uid}-${n + 1}`;
+}
+
+/** Короткая пометка для админов: ref, тип второй брони, номер строки. */
+export function formatParticipantBookingAdminNote(p: Participant): string {
+  const parts: string[] = [];
+  if (p.booking_ref?.trim()) parts.push(`ref ${p.booking_ref.trim()}`);
+  if (p.booking_scope === 'self') parts.push('2-я бронь: для себя');
+  else if (p.booking_scope === 'other') parts.push('бронь: для другого');
+  if (p.rowIndex) parts.push(`стр.${p.rowIndex}`);
+  return parts.length ? `\n${parts.join(' | ')}` : '';
+}
+
+export type SecondBookingScope = 'self' | 'other';
+
 /**
- * Вторая путёвка Орлятник: добавить новую строку в «Участники», прошлая CONFIRMED не меняется.
+ * Вторая путёвка Орлятник: новая строка в «Участники», прошлая CONFIRMED не меняется.
  */
-export async function appendSecondOrlyatnikBookingRow(source: Participant): Promise<Participant> {
+export async function appendSecondOrlyatnikBookingRow(
+  source: Participant,
+  opts: { scope: SecondBookingScope; booking_ref: string }
+): Promise<Participant> {
   const uid = source.user_id;
   return withRetry(async () => {
     const sheets = getSheets();
@@ -589,14 +624,16 @@ export async function appendSecondOrlyatnikBookingRow(source: Participant): Prom
       updated_at: now,
       created_at: now,
       last_reminder_at: '',
-      consent_at: source.consent_at ?? '',
+      consent_at: opts.scope === 'self' ? source.consent_at ?? '' : '',
       yookassa_payment_id: '',
       event: 'orlyatnik',
+      booking_scope: opts.scope,
+      booking_ref: opts.booking_ref,
       sheetSource: PARTICIPANTS_SHEET_ORLYATNIK,
     };
     await sheets.spreadsheets.values.append({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A:T`,
+      range: `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A:${PARTICIPANT_LAST_COL}`,
       valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values: [participantToRow(newRow)] },
@@ -606,7 +643,7 @@ export async function appendSecondOrlyatnikBookingRow(source: Participant): Prom
       await new Promise((r) => setTimeout(r, 350 * (attempt + 1)));
       try {
         const created = await getParticipantByUserId(Number(uid));
-        if (created && created.status === 'INFO') {
+        if (created && created.status === 'INFO' && (created.booking_ref ?? '') === opts.booking_ref) {
           return created;
         }
       } catch (_) {
@@ -648,7 +685,7 @@ export async function getParticipantsPendingFinalSend(): Promise<Participant[]> 
     for (const sheetName of [PARTICIPANTS_SHEET_ORLYATNIK, PARTICIPANTS_SHEET_PIZHAMNIK] as const) {
       const res = await sheets.spreadsheets.values.get({
         spreadsheetId: env.GOOGLE_SHEET_ID,
-        range: `'${sheetName}'!A2:T`,
+        range: `'${sheetName}'!A2:${PARTICIPANT_LAST_COL}`,
       });
       const rows = (res.data.values ?? []) as string[][];
       for (let i = 0; i < rows.length; i++) {
@@ -676,7 +713,7 @@ export async function getParticipantsForBroadcast(statusFilter: 'all' | 'CONFIRM
     for (const sheetName of [PARTICIPANTS_SHEET_ORLYATNIK, PARTICIPANTS_SHEET_PIZHAMNIK] as const) {
       const res = await sheets.spreadsheets.values.get({
         spreadsheetId: env.GOOGLE_SHEET_ID,
-        range: `'${sheetName}'!A2:T`,
+        range: `'${sheetName}'!A2:${PARTICIPANT_LAST_COL}`,
       });
       const rows = (res.data.values ?? []) as string[][];
       for (let i = 0; i < rows.length; i++) {
@@ -700,7 +737,7 @@ export async function getConfirmedCount(event: string): Promise<number> {
     const sheets = getSheets();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${sheetName}'!A2:T`,
+      range: `'${sheetName}'!A2:${PARTICIPANT_LAST_COL}`,
     });
     const rows = (res.data.values ?? []) as string[][];
     let count = 0;
@@ -726,7 +763,7 @@ export async function getParticipantsForReminders(
     for (const sheetName of [PARTICIPANTS_SHEET_ORLYATNIK, PARTICIPANTS_SHEET_PIZHAMNIK] as const) {
       const res = await sheets.spreadsheets.values.get({
         spreadsheetId: env.GOOGLE_SHEET_ID,
-        range: `'${sheetName}'!A2:T`,
+        range: `'${sheetName}'!A2:${PARTICIPANT_LAST_COL}`,
       });
       const rows = (res.data.values ?? []) as string[][];
       for (let i = 0; i < rows.length; i++) {
@@ -749,7 +786,7 @@ export async function getParticipantsForPizhamnikReminder(): Promise<Participant
     const sheets = getSheets();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${PARTICIPANTS_SHEET_PIZHAMNIK}'!A2:T`,
+      range: `'${PARTICIPANTS_SHEET_PIZHAMNIK}'!A2:${PARTICIPANT_LAST_COL}`,
     });
     const rows = (res.data.values ?? []) as string[][];
     const out: Participant[] = [];

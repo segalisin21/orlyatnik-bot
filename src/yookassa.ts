@@ -4,6 +4,7 @@
 
 import { env } from './config.js';
 import { logger } from './logger.js';
+import { formatParticipantBookingAdminNote, type Participant } from './sheets.js';
 
 const YOO_KASSA_API = 'https://api.yookassa.ru/v3';
 
@@ -106,27 +107,11 @@ export async function handleYooKassaWebhook(
     getParticipantByYookassaPayment: (
       userId: number,
       paymentId: string
-    ) => Promise<{
-      user_id: string;
-      chat_id: string;
-      status: string;
-      yookassa_payment_id?: string;
-      event?: string;
-      rowIndex?: number;
-      sheetSource?: string;
-    } | null>;
+    ) => Promise<Participant | null>;
     updateParticipantRow: (
-      p: {
-        user_id: string;
-        chat_id: string;
-        status: string;
-        yookassa_payment_id?: string;
-        event?: string;
-        rowIndex?: number;
-        sheetSource?: string;
-      },
+      p: Participant,
       patch: { status: string }
-    ) => Promise<unknown>;
+    ) => Promise<Participant>;
     invalidateCache: (userId: number) => void;
     sendToUser: (chatId: string, text: string) => Promise<void>;
     sendToAdmin: (text: string, confirmUserId?: number) => Promise<void>;
@@ -152,7 +137,7 @@ export async function handleYooKassaWebhook(
     return 200;
   }
 
-  await deps.updateParticipantRow(p, { status: deps.STATUS.PAYMENT_SENT });
+  const updated = await deps.updateParticipantRow(p, { status: deps.STATUS.PAYMENT_SENT });
   deps.invalidateCache(userId);
 
   try {
@@ -162,7 +147,11 @@ export async function handleYooKassaWebhook(
   }
   try {
     const eventLabel = p.event === 'pizhamnik' ? 'Пижамник' : 'Орлятник 21+';
-    await deps.sendToAdmin(`Оплата по ЮKassa получена. Мероприятие: ${eventLabel}\nuser_id: ${p.user_id}\npayment_id: ${paymentId}\nПодтверди кнопкой после проверки.`, userId);
+    const adminNote = formatParticipantBookingAdminNote(updated);
+    await deps.sendToAdmin(
+      `Оплата по ЮKassa получена. Мероприятие: ${eventLabel}\nuser_id: ${p.user_id}\npayment_id: ${paymentId}${adminNote}\nПодтверди кнопкой после проверки.`,
+      userId
+    );
   } catch (e) {
     logger.error('YooKassa: send to admin failed', { error: String(e) });
   }

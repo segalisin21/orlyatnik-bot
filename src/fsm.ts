@@ -2,15 +2,17 @@
  * State machine: status transitions and persistence (Sheets + in-memory cache).
  */
 
-import type { Participant } from './sheets.js';
+import type { Participant, SecondBookingScope } from './sheets.js';
 import {
   getOrCreateUser,
   getParticipantByUserId,
   getAllParticipantsByUserId,
   resolvePrimaryParticipant,
   updateUserFields,
+  updateParticipantRow,
   appendLog,
   appendSecondOrlyatnikBookingRow,
+  computeNextBookingRef,
 } from './sheets.js';
 import { logger } from './logger.js';
 
@@ -122,9 +124,13 @@ export async function patchParticipant(
 
 /**
  * Новая бронь тем же Telegram на Орлятнике: новая строка в «Участники», прошлая CONFIRMED не трогаем.
- * Если уже есть незавершённая бронь (не CONFIRMED) — `null`. Только orlyatnik, не лист «Пижамник».
+ * `scope`: `self` — копия анкеты и сразу проверка; `other` — новая анкета после согласия.
+ * Если уже есть незавершённая бронь — `null`. Только orlyatnik, не лист «Пижамник».
  */
-export async function startSecondOrlyatnikBooking(userId: number): Promise<Participant | null> {
+export async function startSecondOrlyatnikBooking(
+  userId: number,
+  scope: SecondBookingScope
+): Promise<Participant | null> {
   return withUserLock(userId, async () => {
     const all = await getAllParticipantsByUserId(userId);
     const primary = resolvePrimaryParticipant(all);
@@ -142,7 +148,8 @@ export async function startSecondOrlyatnikBooking(userId: number): Promise<Parti
     }
     confirmedOrl.sort((a, b) => (a.rowIndex ?? 0) - (b.rowIndex ?? 0));
     const source = confirmedOrl[confirmedOrl.length - 1]!;
-    const preview = `second_booking_append shift=${(source.shift ?? '').slice(0, 80)} row=${String(source.rowIndex)}`;
+    const booking_ref = await computeNextBookingRef(userId);
+    const preview = `second_booking_append scope=${scope} ref=${booking_ref} shift=${(source.shift ?? '').slice(0, 60)} row=${String(source.rowIndex)}`;
     appendLog({
       timestamp: new Date().toISOString(),
       user_id: String(userId),
@@ -152,8 +159,26 @@ export async function startSecondOrlyatnikBooking(userId: number): Promise<Parti
       text_preview: preview.slice(0, 500),
     }).catch(() => {});
 
-    const updated = await appendSecondOrlyatnikBookingRow(source);
+    let updated = await appendSecondOrlyatnikBookingRow(source, { scope, booking_ref });
     setCached(userId, updated);
+
+    if (scope === 'self') {
+      updated = await updateParticipantRow(updated, {
+        status: STATUS.FORM_CONFIRM,
+        fio: source.fio,
+        city: source.city,
+        dob: source.dob,
+        companions: source.companions,
+        phone: source.phone,
+        comment: source.comment ?? '',
+        shift: '',
+        payment_proof_file_id: '',
+        yookassa_payment_id: '',
+        final_sent_at: '',
+      });
+      setCached(userId, updated);
+    }
+
     return updated;
   });
 }

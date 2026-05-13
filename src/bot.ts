@@ -32,6 +32,7 @@ import {
   saveAnswer,
   normalizeQuestion,
   getConfirmedCount,
+  formatParticipantBookingAdminNote,
 } from './sheets.js';
 import type { Participant } from './sheets.js';
 import { createPayment, isYooKassaEnabled } from './yookassa.js';
@@ -72,6 +73,28 @@ function eventStartKeyboard(): InlineKeyboard {
     .text('🔥 Забронировать место', 'book_place');
   if (FEATURE_PIZHAMNIK_UI_ENABLED) kb.row().text('Сменить мероприятие', 'event_change');
   return kb;
+}
+
+/** Кнопка «ещё путёвка» под финальным сообщением (только Орлятник). */
+function secondBookingFinalKeyboard(): InlineKeyboard {
+  const kb = getKb('orlyatnik');
+  const label = (kb.SECOND_BOOKING_FINAL_BTN ?? 'Ещё одна путёвка').slice(0, 60);
+  return new InlineKeyboard().text(label, 'book2_o');
+}
+
+function secondBookingScopeKeyboard(): InlineKeyboard {
+  const kb = getKb('orlyatnik');
+  const selfL = (kb.SECOND_BOOKING_SELF_BTN ?? 'Для себя').slice(0, 35);
+  const otherL = (kb.SECOND_BOOKING_OTHER_BTN ?? 'Для другого человека').slice(0, 35);
+  return new InlineKeyboard().text(selfL, 'b2self').row().text(otherL, 'b2oth');
+}
+
+async function replySecondBookingWhoPrompt(ctx: Context): Promise<void> {
+  const kb = getKb('orlyatnik');
+  const text =
+    kb.SECOND_BOOKING_WHO_PROMPT ??
+    'Оформляем ещё одну путёвку на Орлятник. Для тебя (новая смена, данные с прошлой брони) или для другого человека (новая анкета)?';
+  await ctx.reply(text, { reply_markup: secondBookingScopeKeyboard() });
 }
 
 const TELEGRAM_MESSAGE_MAX = 4096;
@@ -402,12 +425,8 @@ export function createBot(): Bot {
       }
 
       if (ev === 'orlyatnik' && PHRASE_BOOK.test(text)) {
-        const reset = await startSecondOrlyatnikBooking(userId);
-        if (reset) {
-          const p2 = await getParticipant(userId, username, chatId);
-          await runBookPlaceFormStart(ctx, userId, chatId, username, p2);
-          return;
-        }
+        await replySecondBookingWhoPrompt(ctx);
+        return;
       }
 
       const base = `Ты уже в списке!\n\nЧат участников: ${env.CHAT_INVITE_LINK || '—'}\nМенеджер: @${env.MANAGER_TG_USERNAME}`;
@@ -454,6 +473,15 @@ export function createBot(): Bot {
         return;
       }
       if (PHRASE_CONFIRM_ANKETA.test(text)) {
+        if (!isFormComplete(p)) {
+          const next = getNextEmptyField(p);
+          if (next === 'shift') {
+            await ctx.reply(buildShiftPrompt(p.event), { reply_markup: getShiftKeyboard(p.event) });
+          } else if (next) {
+            await ctx.reply(getFieldPrompts(p.event)[next]);
+          }
+          return;
+        }
         await ctx.reply(
           'Отлично! 🎉 Анкету сохранил. Выбери, как тебе удобнее внести задаток:',
           { reply_markup: paymentChoiceKeyboard() }
@@ -777,6 +805,59 @@ export function createBot(): Bot {
         return;
       }
 
+      if (data === 'book2_o' || data === 'b2self' || data === 'b2oth') {
+        const uid = ctx.callbackQuery.from?.id;
+        const chatId = ctx.callbackQuery.message?.chat?.id;
+        const username = ctx.callbackQuery.from?.username ?? '';
+        if (!uid || !chatId) {
+          await safeAnswer();
+          return;
+        }
+        let p: Participant;
+        try {
+          p = await getParticipant(uid, username, chatId);
+        } catch (e) {
+          await safeAnswer('Ошибка, попробуй ещё раз.');
+          return;
+        }
+        if ((p.event ?? '') !== 'orlyatnik') {
+          await safeAnswer('Сейчас это доступно только для Орлятника.');
+          return;
+        }
+        if (data === 'book2_o') {
+          if (p.status !== STATUS.CONFIRMED) {
+            await safeAnswer('Кнопка для уже подтверждённой брони. Первую путёвку — через «Забронировать место».');
+            return;
+          }
+          await replySecondBookingWhoPrompt(ctx);
+          await safeAnswer();
+          return;
+        }
+        if (p.status !== STATUS.CONFIRMED) {
+          await safeAnswer('Сначала нужна подтверждённая путёвка. Напиши менеджеру или открой меню.');
+          return;
+        }
+        const scope = data === 'b2self' ? 'self' : 'other';
+        const created = await startSecondOrlyatnikBooking(uid, scope);
+        if (!created) {
+          await safeAnswer('Не удалось начать новую бронь. Напиши менеджеру.');
+          return;
+        }
+        invalidateCache(uid);
+        if (scope === 'self') {
+          const p2 = await getParticipant(uid, username, chatId);
+          await ctx.reply(
+            `Подтянули данные с прошлой брони. Выбери смену для новой путёвки и проверь анкету 👇\n\n${formatAnketa(p2)}\n\n${PHRASE_HINT_CONFIRM}`,
+            { reply_markup: confirmAnketaKeyboard() }
+          );
+        } else {
+          const p2 = await getParticipant(uid, username, chatId);
+          await runBookPlaceFormStart(ctx, uid, chatId, username, p2);
+        }
+        await safeAnswer('Принято');
+        return;
+      }
+
       if (data === 'book_place') {
         const uid = ctx.callbackQuery.from?.id;
         const chatId = ctx.callbackQuery.message?.chat?.id;
@@ -800,12 +881,9 @@ export function createBot(): Bot {
           return;
         }
         if (p.status === STATUS.CONFIRMED && (p.event ?? '') === 'orlyatnik') {
-          const reset = await startSecondOrlyatnikBooking(uid);
-          if (!reset) {
-            await safeAnswer('Не удалось начать новую бронь. Напиши менеджеру.');
-            return;
-          }
-          p = await getParticipant(uid, username, chatId);
+          await replySecondBookingWhoPrompt(ctx);
+          await safeAnswer();
+          return;
         }
         await runBookPlaceFormStart(ctx, uid, chatId, username, p);
         await safeAnswer('Принято');
@@ -906,6 +984,16 @@ export function createBot(): Bot {
         }
         if (p.status !== STATUS.FORM_CONFIRM) {
           await safeAnswer();
+          return;
+        }
+        if (!isFormComplete(p)) {
+          const next = getNextEmptyField(p);
+          await safeAnswer(next ? 'Сначала заполни все поля анкеты.' : 'Проверь анкету.');
+          if (next === 'shift') {
+            await ctx.reply(buildShiftPrompt(p.event), { reply_markup: getShiftKeyboard(p.event) });
+          } else if (next) {
+            await ctx.reply(getFieldPrompts(p.event)[next]);
+          }
           return;
         }
         try {
@@ -1331,7 +1419,9 @@ export function createBot(): Bot {
         updated.event === 'pizhamnik' && (kbEv as { AFTER_RECEIPT_MESSAGE?: string }).AFTER_RECEIPT_MESSAGE
           ? (kbEv as { AFTER_RECEIPT_MESSAGE: string }).AFTER_RECEIPT_MESSAGE
           : `Ты в списке!\n\nЧат участников: ${env.CHAT_INVITE_LINK || '—'}\nМенеджер: @${env.MANAGER_TG_USERNAME}`;
-      await bot.api.sendMessage(updated.chat_id, finalText);
+      const finalOpts =
+        updated.event !== 'pizhamnik' ? { reply_markup: secondBookingFinalKeyboard() } : {};
+      await bot.api.sendMessage(updated.chat_id, finalText, finalOpts);
       await safeAnswer('Оплата подтверждена');
       const msg = ctx.callbackQuery.message;
       const adminChatId = msg?.chat?.id ?? adminChatIds()[0];
@@ -1498,7 +1588,8 @@ export function createBot(): Bot {
     const updated = await getParticipant(userId, username, chatId);
     const eventLabel = updated.event === 'pizhamnik' ? 'Пижамник' : 'Орлятник 21+';
     const mediaLabel = type === 'photo' ? 'фото' : 'документ';
-    const adminText = `Чек (${mediaLabel}) от участника. Мероприятие: ${eventLabel}\n@${username} (id: ${userId})\n\n${formatAnketa(updated)}\n\nНажми кнопку ниже или измени статус в таблице на CONFIRMED.`;
+    const adminNote = formatParticipantBookingAdminNote(updated);
+    const adminText = `Чек (${mediaLabel}) от участника. Мероприятие: ${eventLabel}\n@${username} (id: ${userId})${adminNote}\n\n${formatAnketa(updated)}\n\nНажми кнопку ниже или измени статус в таблице на CONFIRMED.`;
     await sendToAdmin(adminText, type === 'photo' ? { photo: fileId, confirmUserId: userId } : { document: fileId, confirmUserId: userId });
     await ctx.reply('Принял! 🙌 Ждём подтверждения от менеджера. Как только подтвердят — пришлю ссылку на чат и контакт.');
     logOut(String(userId), STATUS.PAYMENT_SENT, 'OUT', 'text', 'payment received');
