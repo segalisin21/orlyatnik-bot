@@ -15,6 +15,7 @@ import {
   updateParticipantRow,
   getParticipantByYookassaPayment,
   getParticipantsForPizhamnikReminder,
+  verifySheetsAtStartup,
   type Participant,
 } from './sheets.js';
 import { invalidateCache, STATUS } from './fsm.js';
@@ -182,6 +183,7 @@ async function main(): Promise<void> {
   });
 
   await loadSheetConfig();
+  await verifySheetsAtStartup();
   bot = createBot();
 
   const app = express();

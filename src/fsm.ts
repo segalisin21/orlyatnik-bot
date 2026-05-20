@@ -10,10 +10,11 @@ import {
   resolvePrimaryParticipant,
   updateUserFields,
   updateParticipantRow,
-  appendLog,
+  logEvent,
   appendSecondOrlyatnikBookingRow,
   computeNextBookingRef,
 } from './sheets.js';
+import { withUserLock } from './user-lock.js';
 import { logger } from './logger.js';
 
 export const STATUS = {
@@ -45,19 +46,6 @@ export function canTransition(from: string, to: Status): boolean {
   return allowed.includes(to);
 }
 
-// --- Per-user mutex: serialise writes for the same user ---
-const userLocks = new Map<number, Promise<unknown>>();
-
-function withUserLock<T>(userId: number, fn: () => Promise<T>): Promise<T> {
-  const prev = userLocks.get(userId) ?? Promise.resolve();
-  const next = prev.then(fn, fn);
-  userLocks.set(userId, next);
-  next.finally(() => {
-    if (userLocks.get(userId) === next) userLocks.delete(userId);
-  });
-  return next;
-}
-
 // --- In-memory cache with TTL ---
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -84,9 +72,13 @@ function setCached(userId: number, p: Participant): void {
 
 export async function getParticipant(userId: number, username: string, chatId: number): Promise<Participant> {
   let p = getCached(userId);
-  if (!p) {
+  if (!p?.rowIndex || p.rowIndex < 2) {
     p = await getOrCreateUser(userId, username, chatId);
-    setCached(userId, p);
+    if (p.rowIndex && p.rowIndex >= 2) {
+      setCached(userId, p);
+    } else {
+      invalidateCache(userId);
+    }
   }
   return p;
 }
@@ -105,8 +97,16 @@ export async function setParticipantStatus(
       if (existing) return existing;
       throw new Error(`Participant not found: ${userId}`);
     }
+    const fromStatus = currentStatus;
     const updated = await updateUserFields(userId, { status: newStatus, ...patch });
     setCached(userId, updated);
+    logEvent({
+      user_id: String(userId),
+      status: newStatus,
+      direction: 'OUT',
+      message_type: 'status_change',
+      text_preview: `${fromStatus} -> ${newStatus}`,
+    });
     return updated;
   });
 }
@@ -150,14 +150,13 @@ export async function startSecondOrlyatnikBooking(
     const source = confirmedOrl[confirmedOrl.length - 1]!;
     const booking_ref = await computeNextBookingRef(userId);
     const preview = `second_booking_append scope=${scope} ref=${booking_ref} shift=${(source.shift ?? '').slice(0, 60)} row=${String(source.rowIndex)}`;
-    appendLog({
-      timestamp: new Date().toISOString(),
+    logEvent({
       user_id: String(userId),
       status: STATUS.INFO,
       direction: 'OUT',
       message_type: 'second_booking_append',
       text_preview: preview.slice(0, 500),
-    }).catch(() => {});
+    });
 
     let updated = await appendSecondOrlyatnikBookingRow(source, { scope, booking_ref });
     setCached(userId, updated);

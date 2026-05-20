@@ -105,7 +105,15 @@ flowchart TB
 | **Настройки** | Ключ–значение для Орлятника (даты, тексты, AVAILABLE_SHIFTS, реквизиты и т.д.). |
 | **Настройки Пижамник** | То же для Пижамника. |
 | **Ответы** | База готовых ответов (вопрос → ответ) для getAnswerFromStorage / saveAnswer. |
-| **Логи** | appendLog: timestamp, user_id, status, direction, message_type, text_preview. |
+| **Логи** | `logEvent` → append в A:G: timestamp, user_id, status, direction, message_type, text_preview (до 500 симв.), raw_json. Типы: `text`, `callback`, `voice`, `photo`, `document`, `status_change`, `user_created`, `second_booking_append`, `admin_confirm`, `payment_received`, `yookassa_paid`. Сбой `appendLog` — `logger.error` в Railway (не silent). При старте — `verifySheetsAtStartup()` проверяет лист «Логи» и заголовок A1:V1. |
+
+## Smoke после деплоя (CRM и логи)
+
+1. **Дубли:** один `user_id` — 5 быстрых `/start` или кликов «Орлятник» → в «Участники» не больше одной новой строки `NEW` (или 0, если уже есть pipeline).
+2. **Логи:** текст пользователя → строка `message_type=text`; нажатие inline-кнопки → `callback` с `data` в preview.
+3. **Колонки:** после анкеты — E–L заполнены; после выбора мероприятия — **S** = `orlyatnik` / `pizhamnik`; при второй брони — **U**/**V** = scope/ref.
+4. **Ошибка Sheets:** на стенде неверный `GOOGLE_SHEET_ID` → в логах Railway `getSheetRows failed` / `appendLog failed`, без лавины дублей `NEW`.
+5. **Ручная таблица:** в Google Sheets добавить **U**/`booking_scope`, **V**/`booking_ref`; удалить старые дубли `NEW` (см. [google-sheet-nastroiki-orlyatnik.md](google-sheet-nastroiki-orlyatnik.md)).
 
 ## Поток данных по участнику
 

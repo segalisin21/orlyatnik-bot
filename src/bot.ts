@@ -24,7 +24,8 @@ import {
 import { getSalesReply, getFormModeReply, reviveAnswer } from './llm.js';
 import { transcribeVoice } from './voice.js';
 import {
-  appendLog,
+  logEvent,
+  formatParticipantLogSuffix,
   updateParticipantRow,
   getParticipantLatestByStatus,
   getParticipantsForBroadcast,
@@ -185,16 +186,24 @@ const PHRASE_SHIFT_CHOICE = /(какие\s+смены|выбрать\s+смен�
 export function createBot(): Bot {
   const bot = new Bot(env.BOT_TOKEN);
 
-  function logOut(userId: string, status: string, direction: 'IN' | 'OUT', messageType: string, textPreview: string, raw?: string) {
-    appendLog({
-      timestamp: new Date().toISOString(),
+  function logOut(
+    userId: string,
+    status: string,
+    direction: 'IN' | 'OUT',
+    messageType: string,
+    textPreview: string,
+    raw?: string,
+    p?: Participant
+  ) {
+    const suffix = p ? formatParticipantLogSuffix(p) : '';
+    logEvent({
       user_id: userId,
       status,
       direction,
       message_type: messageType,
-      text_preview: textPreview,
+      text_preview: (textPreview + suffix).slice(0, 500),
       raw_json: raw,
-    }).catch(() => {});
+    });
   }
 
   const adminChatIds = (): number[] =>
@@ -629,6 +638,15 @@ export function createBot(): Bot {
       const data = ctx.callbackQuery.data ?? '';
       const fromId = ctx.from?.id ?? ctx.callbackQuery.from?.id;
       logger.info('Callback received', { data, fromId });
+      if (fromId) {
+        logEvent({
+          user_id: String(fromId),
+          status: '-',
+          direction: 'IN',
+          message_type: 'callback',
+          text_preview: data.slice(0, 500),
+        });
+      }
 
       if (data === 'event_orlyatnik' || data === 'event_pizhamnik') {
         const uid = ctx.callbackQuery.from?.id;
@@ -1413,6 +1431,13 @@ export function createBot(): Bot {
       }
       const now = new Date().toISOString();
       const updated = await updateParticipantRow(p, { status: STATUS.CONFIRMED, final_sent_at: now });
+      logEvent({
+        user_id: targetUserId,
+        status: STATUS.CONFIRMED,
+        direction: 'OUT',
+        message_type: 'admin_confirm',
+        text_preview: `confirmed row=${String(updated.rowIndex)}${formatParticipantLogSuffix(updated)}`,
+      });
       invalidateCache(userIdNum);
       const kbEv = getKb(updated.event === 'pizhamnik' ? 'pizhamnik' : 'orlyatnik');
       const finalText =
@@ -1522,7 +1547,7 @@ export function createBot(): Bot {
       await ctx.reply(`Что-то пошло не так. Попробуй позже или напиши @${env.MANAGER_TG_USERNAME}.`);
       return;
     }
-    logOut(String(userId), p.status, 'IN', 'text', text.slice(0, 200));
+    logOut(String(userId), p.status, 'IN', 'text', text.slice(0, 500), undefined, p);
 
     // /start всегда показывает приветствие и выбор мероприятия (не переходим в меню события по сохранённому event)
     if (text === '/start' || text.startsWith('/start ')) {
@@ -1592,7 +1617,7 @@ export function createBot(): Bot {
     const adminText = `Чек (${mediaLabel}) от участника. Мероприятие: ${eventLabel}\n@${username} (id: ${userId})${adminNote}\n\n${formatAnketa(updated)}\n\nНажми кнопку ниже или измени статус в таблице на CONFIRMED.`;
     await sendToAdmin(adminText, type === 'photo' ? { photo: fileId, confirmUserId: userId } : { document: fileId, confirmUserId: userId });
     await ctx.reply('Принял! 🙌 Ждём подтверждения от менеджера. Как только подтвердят — пришлю ссылку на чат и контакт.');
-    logOut(String(userId), STATUS.PAYMENT_SENT, 'OUT', 'text', 'payment received');
+    logOut(String(userId), updated.status, 'OUT', 'payment_received', 'payment received', undefined, updated);
   }
 
   bot.on('message:photo', async (ctx) => {

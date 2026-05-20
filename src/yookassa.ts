@@ -4,7 +4,7 @@
 
 import { env } from './config.js';
 import { logger } from './logger.js';
-import { formatParticipantBookingAdminNote, type Participant } from './sheets.js';
+import { formatParticipantBookingAdminNote, logEvent, type Participant } from './sheets.js';
 
 const YOO_KASSA_API = 'https://api.yookassa.ru/v3';
 
@@ -152,6 +152,13 @@ export async function handleYooKassaWebhook(
       `Оплата по ЮKassa получена. Мероприятие: ${eventLabel}\nuser_id: ${p.user_id}\npayment_id: ${paymentId}${adminNote}\nПодтверди кнопкой после проверки.`,
       userId
     );
+    logEvent({
+      user_id: p.user_id,
+      status: deps.STATUS.PAYMENT_SENT,
+      direction: 'OUT',
+      message_type: 'yookassa_paid',
+      text_preview: `payment_id=${paymentId}${adminNote}`.slice(0, 500),
+    });
   } catch (e) {
     logger.error('YooKassa: send to admin failed', { error: String(e) });
   }

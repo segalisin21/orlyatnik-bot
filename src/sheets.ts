@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import { google, sheets_v4 } from 'googleapis';
 import { env, kb } from './config.js';
 import { logger } from './logger.js';
+import { withUserLock } from './user-lock.js';
 
 const PARTICIPANTS_SHEET_ORLYATNIK = 'Участники';
 const PARTICIPANTS_SHEET_PIZHAMNIK = 'Пижамник';
@@ -64,6 +65,45 @@ export interface LogEntry {
   message_type: string;
   text_preview: string;
   raw_json?: string;
+}
+
+export type LogEventInput = {
+  user_id: string;
+  status: string;
+  direction: 'IN' | 'OUT';
+  message_type: string;
+  text_preview: string;
+  raw_json?: string;
+  timestamp?: string;
+};
+
+/** Fire-and-forget log to sheet «Логи»; errors go to console (never silent). */
+export function logEvent(entry: LogEventInput): void {
+  const full: LogEntry = {
+    timestamp: entry.timestamp ?? new Date().toISOString(),
+    user_id: entry.user_id,
+    status: entry.status,
+    direction: entry.direction,
+    message_type: entry.message_type,
+    text_preview: (entry.text_preview ?? '').slice(0, 500),
+    raw_json: entry.raw_json,
+  };
+  appendLog(full).catch((e) => {
+    logger.error('appendLog failed', {
+      userId: entry.user_id,
+      messageType: entry.message_type,
+      error: String(e),
+    });
+  });
+}
+
+export function formatParticipantLogSuffix(p: Participant): string {
+  const parts: string[] = [];
+  if (p.event?.trim()) parts.push(`event=${p.event.trim()}`);
+  if (p.booking_ref?.trim()) parts.push(`ref=${p.booking_ref.trim()}`);
+  if (p.booking_scope?.trim()) parts.push(`scope=${p.booking_scope.trim()}`);
+  if (p.rowIndex) parts.push(`row=${p.rowIndex}`);
+  return parts.length ? ` ${parts.join(' ')}` : '';
 }
 
 function getAuthClient(): sheets_v4.Sheets {
@@ -195,22 +235,43 @@ function participantToRow(p: Participant): string[] {
   ];
 }
 
-/** Get one sheet's data; returns [] if sheet missing or range invalid. */
-async function getSheetRows(sheetName: string): Promise<string[][]> {
+function isSheetRangeParseError(msg: string): boolean {
+  return msg.includes('Unable to parse range') || msg.includes('not found') || msg.includes('404');
+}
+
+async function fetchSheetRowsWithCol(sheetName: string, lastCol: string): Promise<string[][]> {
   const sheets = getSheets();
-  try {
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${sheetName}'!A2:${PARTICIPANT_LAST_COL}`,
-    });
-    return (res.data.values ?? []) as string[][];
-  } catch (e: unknown) {
-    const msg = String((e as { message?: string })?.message ?? e);
-    if (msg.includes('Unable to parse range') || msg.includes('not found') || msg.includes('404')) {
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: env.GOOGLE_SHEET_ID,
+    range: `'${sheetName}'!A2:${lastCol}`,
+  });
+  return (res.data.values ?? []) as string[][];
+}
+
+/** Get one sheet's data; fallback A2:T if A2:V fails; logs errors instead of silent []. */
+async function getSheetRows(sheetName: string): Promise<string[][]> {
+  const cols = [PARTICIPANT_LAST_COL, 'T'] as const;
+  let lastError = '';
+  for (const col of cols) {
+    try {
+      const rows = await fetchSheetRowsWithCol(sheetName, col);
+      if (col === 'T') {
+        logger.warn('Participants sheet read with fallback A2:T — add columns U-V (booking_scope, booking_ref)', {
+          sheetName,
+        });
+      }
+      return rows;
+    } catch (e: unknown) {
+      lastError = String((e as { message?: string })?.message ?? e);
+      if (isSheetRangeParseError(lastError) && col === PARTICIPANT_LAST_COL) {
+        continue;
+      }
+      logger.error('getSheetRows failed', { sheetName, col, error: lastError });
       return [];
     }
-    throw e;
   }
+  logger.error('getSheetRows: no readable range for sheet', { sheetName, error: lastError });
+  return [];
 }
 
 /** Statuses that mean «есть незавершённая бронь» — для выбора активной строки при нескольких user_id. */
@@ -299,45 +360,9 @@ export async function getParticipantLatestByStatus(userId: number, status: strin
   return matches[0]!;
 }
 
-/** Get participant by user_id or create new row in Участники (event ''). Idempotent. */
-export async function getOrCreateUser(
-  userId: number,
-  username: string,
-  chatId: number
-): Promise<Participant> {
-  const uid = String(userId);
-  return withRetry(async () => {
-    const existing = await getAllParticipantsByUserId(userId);
-    if (existing.length > 0) {
-      const primary = resolvePrimaryParticipant(existing);
-      if (primary) return primary;
-    }
-    const sheets = getSheets();
-    const now = new Date().toISOString();
-    const newRow: Participant = {
-      user_id: uid,
-      username: username || '',
-      chat_id: String(chatId),
-      status: 'NEW',
-      fio: '',
-      city: '',
-      dob: '',
-      companions: '',
-      phone: '',
-      comment: '',
-      shift: '',
-      payment_proof_file_id: '',
-      final_sent_at: '',
-      updated_at: now,
-      created_at: now,
-      last_reminder_at: '',
-      consent_at: '',
-      yookassa_payment_id: '',
-      event: '',
-      booking_scope: '',
-      booking_ref: '',
-      sheetSource: PARTICIPANTS_SHEET_ORLYATNIK,
-    };
+async function appendParticipantRowOnce(newRow: Participant): Promise<void> {
+  const sheets = getSheets();
+  await withRetry(async () => {
     await sheets.spreadsheets.values.append({
       spreadsheetId: env.GOOGLE_SHEET_ID,
       range: `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A:${PARTICIPANT_LAST_COL}`,
@@ -345,18 +370,78 @@ export async function getOrCreateUser(
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values: [participantToRow(newRow)] },
     });
-    // Wait for the new row to be visible (Sheets API eventual consistency); poll read-only to avoid duplicate append on retry
-    for (let attempt = 0; attempt < 12; attempt++) {
-      await new Promise((r) => setTimeout(r, 350 * (attempt + 1)));
-      try {
-        const created = await getParticipantByUserId(userId);
-        if (created) return created;
-      } catch (_) {
-        /* ignore read errors, retry */
-      }
-    }
-    return newRow;
   });
+  sheetIdsCache = null;
+}
+
+async function pollParticipantAfterAppend(userId: number, maxAttempts = 14): Promise<Participant | null> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise((r) => setTimeout(r, 350 * (attempt + 1)));
+    try {
+      const created = await getParticipantByUserId(userId);
+      if (created?.rowIndex && created.rowIndex >= 2) return created;
+    } catch (e) {
+      logger.warn('pollParticipantAfterAppend read error', { userId, attempt, error: String(e) });
+    }
+  }
+  return null;
+}
+
+async function createParticipantRowOnce(userId: number, username: string, chatId: number): Promise<Participant> {
+  const uid = String(userId);
+  const existing = await getAllParticipantsByUserId(userId);
+  if (existing.length > 0) {
+    const primary = resolvePrimaryParticipant(existing);
+    if (primary) return primary;
+  }
+  const now = new Date().toISOString();
+  const newRow: Participant = {
+    user_id: uid,
+    username: username || '',
+    chat_id: String(chatId),
+    status: 'NEW',
+    fio: '',
+    city: '',
+    dob: '',
+    companions: '',
+    phone: '',
+    comment: '',
+    shift: '',
+    payment_proof_file_id: '',
+    final_sent_at: '',
+    updated_at: now,
+    created_at: now,
+    last_reminder_at: '',
+    consent_at: '',
+    yookassa_payment_id: '',
+    event: '',
+    booking_scope: '',
+    booking_ref: '',
+    sheetSource: PARTICIPANTS_SHEET_ORLYATNIK,
+  };
+  await appendParticipantRowOnce(newRow);
+  const created = await pollParticipantAfterAppend(userId);
+  if (!created) {
+    logger.error('getOrCreateUser: row not visible after append', { userId: uid });
+    throw new Error(`getOrCreateUser: row not visible after append for user ${uid}`);
+  }
+  logEvent({
+    user_id: uid,
+    status: 'NEW',
+    direction: 'OUT',
+    message_type: 'user_created',
+    text_preview: `row=${String(created.rowIndex)} chat=${chatId}`,
+  });
+  return created;
+}
+
+/** Get participant by user_id or create new row in Участники (event ''). Idempotent under per-user lock. */
+export async function getOrCreateUser(
+  userId: number,
+  username: string,
+  chatId: number
+): Promise<Participant> {
+  return withUserLock(userId, () => createParticipantRowOnce(userId, username, chatId));
 }
 
 /** Resolve participant by id, with retries for eventual consistency after a just-created row. */
@@ -604,8 +689,14 @@ export async function appendSecondOrlyatnikBookingRow(
   opts: { scope: SecondBookingScope; booking_ref: string }
 ): Promise<Participant> {
   const uid = source.user_id;
-  return withRetry(async () => {
-    const sheets = getSheets();
+  const userNum = Number(uid);
+  return withUserLock(userNum, async () => {
+    const all = await getAllParticipantsByUserId(userNum);
+    const existing = all.find(
+      (p) => p.status === 'INFO' && (p.booking_ref ?? '') === opts.booking_ref && (p.event ?? '') === 'orlyatnik'
+    );
+    if (existing) return existing;
+
     const now = new Date().toISOString();
     const newRow: Participant = {
       user_id: uid,
@@ -631,23 +722,19 @@ export async function appendSecondOrlyatnikBookingRow(
       booking_ref: opts.booking_ref,
       sheetSource: PARTICIPANTS_SHEET_ORLYATNIK,
     };
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: env.GOOGLE_SHEET_ID,
-      range: `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A:${PARTICIPANT_LAST_COL}`,
-      valueInputOption: 'USER_ENTERED',
-      insertDataOption: 'INSERT_ROWS',
-      requestBody: { values: [participantToRow(newRow)] },
-    });
-    sheetIdsCache = null;
+    await appendParticipantRowOnce(newRow);
     for (let attempt = 0; attempt < 12; attempt++) {
       await new Promise((r) => setTimeout(r, 350 * (attempt + 1)));
       try {
-        const created = await getParticipantByUserId(Number(uid));
-        if (created && created.status === 'INFO' && (created.booking_ref ?? '') === opts.booking_ref) {
-          return created;
+        const matches = (await getAllParticipantsByUserId(userNum)).filter(
+          (p) => p.status === 'INFO' && (p.booking_ref ?? '') === opts.booking_ref
+        );
+        if (matches.length > 0) {
+          matches.sort(compareParticipantsNewestFirst);
+          return matches[0]!;
         }
-      } catch (_) {
-        /* ignore read errors */
+      } catch (e) {
+        logger.warn('appendSecondOrlyatnikBookingRow poll error', { userId: uid, attempt, error: String(e) });
       }
     }
     throw new Error(`appendSecondOrlyatnikBookingRow: row not visible after append for user ${uid}`);
@@ -994,4 +1081,49 @@ export async function saveAnswer(question: string, answer: string): Promise<void
       }
     }
   });
+}
+
+/** Startup checks: лист «Логи» и заголовки «Участники» (предупреждения в консоль). */
+export async function verifySheetsAtStartup(): Promise<void> {
+  const sheets = getSheets();
+  try {
+    await sheets.spreadsheets.values.get({
+      spreadsheetId: env.GOOGLE_SHEET_ID,
+      range: `'${LOGS_SHEET}'!A1:G1`,
+    });
+  } catch (e) {
+    logger.error('Startup: sheet «Логи» missing or unreadable — bot logs will fail', {
+      error: String(e),
+    });
+  }
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: env.GOOGLE_SHEET_ID,
+      range: `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A1:V1`,
+    });
+    const header = ((res.data.values ?? [])[0] ?? []) as string[];
+    if (header.length > 0 && header[0] !== 'user_id' && !String(header[0]).includes('user')) {
+      logger.warn('Startup: column A1 may not be user_id', { a1: header[0] });
+    }
+    if (header.length < 21) {
+      logger.warn('Startup: participants header row shorter than 22 columns — add U=booking_scope, V=booking_ref', {
+        columns: header.length,
+      });
+    }
+  } catch (e) {
+    const msg = String((e as { message?: string })?.message ?? e);
+    if (isSheetRangeParseError(msg)) {
+      try {
+        await sheets.spreadsheets.values.get({
+          spreadsheetId: env.GOOGLE_SHEET_ID,
+          range: `'${PARTICIPANTS_SHEET_ORLYATNIK}'!A1:T1`,
+        });
+        logger.warn('Startup: read A1:T1 only — add columns U-V on «Участники» and «Пижамник»');
+      } catch (e2) {
+        logger.error('Startup: sheet «Участники» missing or unreadable', { error: String(e2) });
+      }
+    } else {
+      logger.error('Startup: failed to read «Участники» header', { error: msg });
+    }
+  }
 }
