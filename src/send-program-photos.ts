@@ -60,6 +60,39 @@ export function collectProgramPhotoUrls(kb: Record<string, unknown>): string[] {
   return collectFromKeys(kb, LEGACY_BOOKING_KEYS);
 }
 
+/** Одно фото по HTTPS / Google Drive URL. */
+export async function sendPhotoUrl(
+  api: Api,
+  chatId: string | number,
+  rawUrl: string,
+  caption?: string
+): Promise<boolean> {
+  const url = normalizePhotoUrlForTelegram(rawUrl);
+  if (!/^https?:\/\//i.test(url)) return false;
+  try {
+    await api.sendPhoto(chatId, url, caption ? { caption } : undefined);
+    return true;
+  } catch (e) {
+    logger.warn('sendPhotoUrl failed', { error: String(e), chatId, url });
+    return false;
+  }
+}
+
+/** Несколько фото по порядку (инфографики условий и т.д.). */
+export async function sendPhotoUrlsSequence(
+  api: Api,
+  chatId: string | number,
+  urls: string[]
+): Promise<boolean> {
+  let sent = false;
+  for (const raw of urls) {
+    const t = raw.trim();
+    if (!t) continue;
+    if (await sendPhotoUrl(api, chatId, t)) sent = true;
+  }
+  return sent;
+}
+
 const ZWSP = '\u2060';
 
 /** Альбом из 1–3 фото без подписей; затем невидимое сообщение только с клавиатурой (у API нельзя прикрепить клавиатуру к media group). */

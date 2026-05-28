@@ -21,8 +21,21 @@ export interface RuntimeKb {
   DEPOSIT: number;
   PAYMENT_SBER: string;
   MANAGER_FOR_COMPLEX: string;
+  MANAGER_ELVIRA_USERNAME?: string;
+  MANAGER_ELVIRA_URL?: string;
+  MANAGER_KRISTINA_URL?: string;
   MEDIA_CHANNEL: string;
   AFTER_PAYMENT_INSTRUCTION: string;
+  REVIEWS_BUTTON_LABEL?: string;
+  REVIEWS_INTRO_TEXT?: string;
+  REVIEWS_POST_URL?: string;
+  CONDITIONS_PRICE_PHOTO?: string;
+  CONDITIONS_TERMS_PHOTO?: string;
+  PROGRAM_COVER_PHOTO?: string;
+  CONFIRMED_CELEBRATION_PHOTO?: string;
+  CONFIRMED_MESSAGE_TEXT?: string;
+  PACKING_LIST_PHOTO?: string;
+  LOOKS_REFERENCES_URL?: string;
   /** URL фото для кнопки «Узнать программу» (лист «Настройки»). */
   PROGRAM_PHOTO_1?: string;
   PROGRAM_PHOTO_2?: string;
@@ -174,7 +187,19 @@ export const EDITABLE_KEYS: { key: string; label: string }[] = [
   { key: 'PROGRAM_PHOTO_1', label: 'URL фото программы 1' },
   { key: 'PROGRAM_PHOTO_2', label: 'URL фото программы 2' },
   { key: 'PROGRAM_PHOTO_3', label: 'URL фото программы 3' },
+  { key: 'PROGRAM_COVER_PHOTO', label: 'URL обложки программы' },
+  { key: 'CONDITIONS_PRICE_PHOTO', label: 'URL инфографики: цены' },
+  { key: 'CONDITIONS_TERMS_PHOTO', label: 'URL инфографики: условия' },
   { key: 'CONDITIONS_TEXT', label: 'Текст: условия и стоимость' },
+  { key: 'REVIEWS_BUTTON_LABEL', label: 'Кнопка: отзывы (подпись)' },
+  { key: 'REVIEWS_INTRO_TEXT', label: 'Текст: отзывы' },
+  { key: 'REVIEWS_POST_URL', label: 'Ссылка на пост с отзывами' },
+  { key: 'CONFIRMED_CELEBRATION_PHOTO', label: 'URL: поздравление после оплаты' },
+  { key: 'CONFIRMED_MESSAGE_TEXT', label: 'Текст после подтверждения оплаты' },
+  { key: 'PACKING_LIST_PHOTO', label: 'URL: чек-лист вещей' },
+  { key: 'LOOKS_REFERENCES_URL', label: 'Ссылка: идеи образов' },
+  { key: 'MANAGER_ELVIRA_URL', label: 'Ссылка: Эльвира (личка)' },
+  { key: 'MANAGER_KRISTINA_URL', label: 'Ссылка: Кристина (личка)' },
   { key: 'PRICE', label: 'Цена (₽)' },
   { key: 'DEPOSIT', label: 'Задаток (₽)' },
   { key: 'PAYMENT_SBER', label: 'Реквизиты Сбер' },
@@ -186,6 +211,7 @@ export const EDITABLE_KEYS: { key: string; label: string }[] = [
   { key: 'OBJECTION_NO_ALCOHOL', label: 'Возражение: не пью' },
   { key: 'OBJECTION_NO_COMPANY', label: 'Возражение: нет компании' },
   { key: 'MEDIA_CHANNEL', label: 'Ссылка на фото/видео' },
+  { key: 'MANAGER_FOR_COMPLEX', label: 'Контакты менеджеров (текст)' },
   { key: 'AFTER_PAYMENT_INSTRUCTION', label: 'Инструкция после оплаты' },
   { key: 'CONSENT_PD_TEXT', label: 'Текст согласия на обработку ПД' },
   { key: 'SECOND_BOOKING_FINAL_BTN', label: 'Кнопка: ещё путёвка (после списка)' },

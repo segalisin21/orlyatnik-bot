@@ -5,7 +5,13 @@
 import { Bot, InlineKeyboard, type Context } from 'grammy';
 import { env, isAdmin, ROOT_EVENT_CHOICE_MESSAGE, FEATURE_PIZHAMNIK_UI_ENABLED } from './config.js';
 import { getKb, updateConfigKey, EDITABLE_KEYS, EDITABLE_KEYS_PIZHAMNIK, getShiftsList } from './runtime-config.js';
-import { collectProgramPhotoUrls, sendProgramPhotosOnly } from './send-program-photos.js';
+import {
+  collectProgramPhotoUrls,
+  sendProgramPhotosOnly,
+  sendPhotoUrl,
+  sendPhotoUrlsSequence,
+} from './send-program-photos.js';
+import { getConfirmedShortMessage, sendPostRegistrationFlow } from './post-registration.js';
 import { logger } from './logger.js';
 import {
   getParticipant,
@@ -67,10 +73,13 @@ function eventChoiceKeyboard(): InlineKeyboard {
   return kb;
 }
 
-function eventStartKeyboard(): InlineKeyboard {
+function eventStartKeyboard(event: string = 'orlyatnik'): InlineKeyboard {
+  const kbCfg = getKb(event);
+  const reviewsLabel = (kbCfg.REVIEWS_BUTTON_LABEL ?? '💬 Отзывы участников').slice(0, 60);
   const kb = new InlineKeyboard()
     .text('Узнать программу', 'program')
     .text('Условия и стоимость', 'conditions').row()
+    .text(reviewsLabel, 'reviews').row()
     .text('🔥 Забронировать место', 'book_place');
   if (FEATURE_PIZHAMNIK_UI_ENABLED) kb.row().text('Сменить мероприятие', 'event_change');
   return kb;
@@ -438,11 +447,11 @@ export function createBot(): Bot {
         return;
       }
 
-      const base = `Ты уже в списке!\n\nЧат участников: ${env.CHAT_INVITE_LINK || '—'}\nМенеджер: @${env.MANAGER_TG_USERNAME}`;
+      const base = getConfirmedShortMessage(ev);
       if (ev === 'orlyatnik') {
         await ctx.reply(
           `${base}\n\nОформить ещё одну путёвку (другая смена или для другого человека — укажешь в анкете): нажми «🔥 Забронировать место» ниже или напиши, например: «Хочу забронировать».`,
-          { reply_markup: eventStartKeyboard() }
+          { reply_markup: eventStartKeyboard(ev) }
         );
       } else {
         await ctx.reply(base);
@@ -735,6 +744,35 @@ export function createBot(): Bot {
         return;
       }
 
+      if (data === 'reviews') {
+        const uid = ctx.callbackQuery.from?.id;
+        const chatId = ctx.callbackQuery.message?.chat?.id;
+        const username = ctx.callbackQuery.from?.username ?? '';
+        if (!uid || !chatId) {
+          await safeAnswer();
+          return;
+        }
+        let p: Participant;
+        try {
+          p = await getParticipant(uid, username, chatId);
+        } catch {
+          await safeAnswer();
+          return;
+        }
+        const ev = p.event ?? 'orlyatnik';
+        const kb = getKb(ev);
+        const intro =
+          kb.REVIEWS_INTRO_TEXT ??
+          'Орлятник — это комьюнити взрослых, которые умеют отдыхать по-настоящему. Посмотри, что пишут те, кто уже был с нами 👇';
+        const postUrl = kb.REVIEWS_POST_URL ?? 'https://t.me/orlyatnik/286';
+        const menuKb = eventStartKeyboard(ev);
+        const urlKb = new InlineKeyboard().url('Читать отзывы', postUrl).row();
+        for (const row of menuKb.inline_keyboard) urlKb.inline_keyboard.push(row);
+        await ctx.reply(intro, { reply_markup: urlKb });
+        await safeAnswer();
+        return;
+      }
+
       if (data === 'program') {
         const uid = ctx.callbackQuery.from?.id;
         const chatId = ctx.callbackQuery.message?.chat?.id;
@@ -746,21 +784,29 @@ export function createBot(): Bot {
         let p: Participant;
         try {
           p = await getParticipant(uid, username, chatId);
-        } catch (e) {
+        } catch {
           await safeAnswer();
           return;
         }
         const ev = p.event ?? 'orlyatnik';
         const kb = getKb(ev);
-        const menuKb = eventStartKeyboard();
-        const photos = collectProgramPhotoUrls(kb as unknown as Record<string, unknown>);
-        let ok = false;
-        if (photos.length > 0) {
-          ok = await sendProgramPhotosOnly(bot.api, chatId, photos, menuKb);
+        const kbRec = kb as unknown as Record<string, unknown>;
+        const menuKb = eventStartKeyboard(ev);
+        const cover = (kb.PROGRAM_COVER_PHOTO ?? '').trim();
+        if (cover) {
+          await sendPhotoUrl(bot.api, chatId, cover, 'РАСШИРЕННАЯ ПРОГРАММА СМЕНЫ');
         }
-        if (!ok) {
-          const text = kb.PROGRAM_TEXT ?? '';
-          if (text) await ctx.reply(text, { reply_markup: menuKb });
+        const text = kb.PROGRAM_TEXT ?? '';
+        if (text) {
+          await ctx.reply(text, { reply_markup: menuKb });
+        } else if (!cover) {
+          const photos = collectProgramPhotoUrls(kbRec);
+          const ok = photos.length > 0 && (await sendProgramPhotosOnly(bot.api, chatId, photos, menuKb));
+          if (!ok && !cover) {
+            await ctx.reply('Программа скоро появится. Загляни в «Условия и стоимость» или напиши вопрос.', {
+              reply_markup: menuKb,
+            });
+          }
         }
         await safeAnswer();
         return;
@@ -777,18 +823,26 @@ export function createBot(): Bot {
         let p: Participant;
         try {
           p = await getParticipant(uid, username, chatId);
-        } catch (e) {
+        } catch {
           await safeAnswer();
           return;
         }
         const ev = p.event ?? 'orlyatnik';
         const kb = getKb(ev);
-        const text = kb.CONDITIONS_TEXT ?? '';
-        const parts = splitTelegramMessage(text);
         const followKb = conditionsFollowupKeyboard();
-        for (let i = 0; i < parts.length; i++) {
-          const isLast = i === parts.length - 1;
-          await ctx.reply(parts[i], isLast ? { reply_markup: followKb } : {});
+        const pricePhoto = (kb.CONDITIONS_PRICE_PHOTO ?? '').trim();
+        const termsPhoto = (kb.CONDITIONS_TERMS_PHOTO ?? '').trim();
+        const infographicUrls = [pricePhoto, termsPhoto].filter(Boolean);
+        if (infographicUrls.length > 0) {
+          await sendPhotoUrlsSequence(bot.api, chatId, infographicUrls);
+          await ctx.reply('Готов запрыгнуть в лето? 🚀', { reply_markup: followKb });
+        } else {
+          const text = kb.CONDITIONS_TEXT ?? '';
+          const parts = splitTelegramMessage(text);
+          for (let i = 0; i < parts.length; i++) {
+            const isLast = i === parts.length - 1;
+            await ctx.reply(parts[i], isLast ? { reply_markup: followKb } : {});
+          }
         }
         await safeAnswer();
         return;
@@ -1439,14 +1493,11 @@ export function createBot(): Bot {
         text_preview: `confirmed row=${String(updated.rowIndex)}${formatParticipantLogSuffix(updated)}`,
       });
       invalidateCache(userIdNum);
-      const kbEv = getKb(updated.event === 'pizhamnik' ? 'pizhamnik' : 'orlyatnik');
-      const finalText =
-        updated.event === 'pizhamnik' && (kbEv as { AFTER_RECEIPT_MESSAGE?: string }).AFTER_RECEIPT_MESSAGE
-          ? (kbEv as { AFTER_RECEIPT_MESSAGE: string }).AFTER_RECEIPT_MESSAGE
-          : `Ты в списке!\n\nЧат участников: ${env.CHAT_INVITE_LINK || '—'}\nМенеджер: @${env.MANAGER_TG_USERNAME}`;
-      const finalOpts =
-        updated.event !== 'pizhamnik' ? { reply_markup: secondBookingFinalKeyboard() } : {};
-      await bot.api.sendMessage(updated.chat_id, finalText, finalOpts);
+      await sendPostRegistrationFlow(
+        bot.api,
+        updated.chat_id,
+        updated.event === 'pizhamnik' ? 'pizhamnik' : 'orlyatnik'
+      );
       await safeAnswer('Оплата подтверждена');
       const msg = ctx.callbackQuery.message;
       const adminChatId = msg?.chat?.id ?? adminChatIds()[0];

@@ -21,6 +21,7 @@ import {
 import { invalidateCache, STATUS } from './fsm.js';
 import { handleYooKassaWebhook } from './yookassa.js';
 import { InlineKeyboard } from 'grammy';
+import { sendPostRegistrationFlow } from './post-registration.js';
 
 let bot: ReturnType<typeof createBot>;
 
@@ -53,21 +54,9 @@ const REMINDER_PIZHAMNIK_BY_STATUS: Record<string, string> = {
     'Мы получили твой чек, менеджер скоро проверит. Если есть вопросы — пиши.',
 };
 
-function secondBookingFinalKeyboard(): InlineKeyboard {
-  const kb = getKb('orlyatnik');
-  const label = (kb.SECOND_BOOKING_FINAL_BTN ?? 'Ещё одна путёвка').slice(0, 60);
-  return new InlineKeyboard().text(label, 'book2_o');
-}
-
 async function sendFinalToParticipant(p: Participant): Promise<void> {
   const ev = p.event === 'pizhamnik' ? 'pizhamnik' : 'orlyatnik';
-  const kb = getKb(ev);
-  const finalText =
-    p.event === 'pizhamnik' && kb.AFTER_RECEIPT_MESSAGE?.trim()
-      ? kb.AFTER_RECEIPT_MESSAGE.trim()
-      : `Ты в списке!\n\nЧат участников: ${env.CHAT_INVITE_LINK || '—'}\nМенеджер: @${env.MANAGER_TG_USERNAME}`;
-  const opts = p.event !== 'pizhamnik' ? { reply_markup: secondBookingFinalKeyboard() } : {};
-  await bot.api.sendMessage(p.chat_id, finalText, opts);
+  await sendPostRegistrationFlow(bot.api, p.chat_id, ev);
 }
 
 /** При нескольких строках на один chat_id — одно сообщение, обновляем все строки. */
