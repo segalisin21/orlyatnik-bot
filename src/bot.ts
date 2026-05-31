@@ -11,7 +11,7 @@ import {
   sendPhotoUrl,
   sendPhotoUrlsSequence,
 } from './send-program-photos.js';
-import { getConfirmedShortMessage, sendPostRegistrationFlow } from './post-registration.js';
+import { sendPostRegistrationFlow } from './post-registration.js';
 import { logger } from './logger.js';
 import {
   getParticipant,
@@ -27,7 +27,7 @@ import {
   invalidateCache,
   type FormField,
 } from './fsm.js';
-import { getSalesReply, getFormModeReply, reviveAnswer, pingLlm } from './llm.js';
+import { getSalesReply, getFormModeReply, pingLlm } from './llm.js';
 import { transcribeVoice } from './voice.js';
 import {
   logEvent,
@@ -68,8 +68,11 @@ function getShiftKeyboard(event?: string): InlineKeyboard {
 }
 
 function eventChoiceKeyboard(): InlineKeyboard {
+  const kbCfg = getKb('orlyatnik');
+  const reviewsLabel = (kbCfg.REVIEWS_BUTTON_LABEL ?? '💬 Отзывы участников').slice(0, 60);
   const kb = new InlineKeyboard().text('Орлятник 21+', 'event_orlyatnik');
   if (FEATURE_PIZHAMNIK_UI_ENABLED) kb.text('Пижамник', 'event_pizhamnik');
+  kb.row().text(reviewsLabel, 'reviews');
   return kb;
 }
 
@@ -329,6 +332,35 @@ export function createBot(): Bot {
       .text('Ждут оплаты / чек', 'admin_br_waiting');
   }
 
+  /** Shared LLM consultation: exact cache or getSalesReply, one reply without link previews. */
+  async function replyConsultation(
+    ctx: Context,
+    userId: number,
+    text: string,
+    ev: 'orlyatnik' | 'pizhamnik',
+    opts?: { confirmed?: boolean; keyboard?: InlineKeyboard }
+  ): Promise<void> {
+    const sendOpts = {
+      link_preview_options: { is_disabled: true as const },
+      ...(opts?.keyboard ? { reply_markup: opts.keyboard } : {}),
+    };
+
+    const norm = normalizeQuestion(text);
+    const stored = await getAnswerFromStorage(norm);
+    if (stored) {
+      pushDialog(userId, 'user', text);
+      pushDialog(userId, 'assistant', stored);
+      await ctx.reply(stored, sendOpts);
+      return;
+    }
+    const history = getDialogHistory(userId);
+    const reply = await getSalesReply(text, ev, history, { confirmedParticipant: opts?.confirmed });
+    if (reply.ok) await saveAnswer(text, reply.text);
+    pushDialog(userId, 'user', text);
+    pushDialog(userId, 'assistant', reply.text);
+    await ctx.reply(reply.text, sendOpts);
+  }
+
   /** Shared text/voice handler: CONFIRMED, form flow, BOOK, shift choice, or LLM + answer storage. */
   async function handleUserText(
     ctx: Context,
@@ -476,15 +508,10 @@ export function createBot(): Bot {
         return;
       }
 
-      const base = getConfirmedShortMessage(ev);
-      if (ev === 'orlyatnik') {
-        await ctx.reply(
-          `${base}\n\nОформить ещё одну путёвку (другая смена или для другого человека — укажешь в анкете): нажми «🔥 Забронировать место» ниже или напиши, например: «Хочу забронировать».`,
-          { reply_markup: eventStartKeyboard(ev) }
-        );
-      } else {
-        await ctx.reply(base);
-      }
+      await replyConsultation(ctx, userId, text, ev, {
+        confirmed: true,
+        keyboard: ev === 'orlyatnik' ? eventStartKeyboard(ev) : undefined,
+      });
       return;
     }
 
@@ -595,7 +622,8 @@ export function createBot(): Bot {
         return;
       }
 
-      if (formOut.reply_text) await ctx.reply(formOut.reply_text);
+      const willSendNextPrompt = !!next && !(formOut.needs_confirmation && formComplete);
+      if (formOut.reply_text && !willSendNextPrompt) await ctx.reply(formOut.reply_text);
       if (formOut.needs_confirmation && formComplete) {
         await setParticipantStatus(userId, STATUS.FORM_CONFIRM);
         p = await getParticipant(userId, username, chatId);
@@ -635,21 +663,7 @@ export function createBot(): Bot {
       return;
     }
 
-    const norm = normalizeQuestion(text);
-    const stored = await getAnswerFromStorage(norm);
-    if (stored) {
-      const revived = await reviveAnswer(stored);
-      pushDialog(userId, 'user', text);
-      pushDialog(userId, 'assistant', revived);
-      await ctx.reply(revived);
-      return;
-    }
-    const history = getDialogHistory(userId);
-    const reply = await getSalesReply(text, ev, history);
-    if (reply.ok) await saveAnswer(text, reply.text);
-    pushDialog(userId, 'user', text);
-    pushDialog(userId, 'assistant', reply.text);
-    await ctx.reply(reply.text);
+    await replyConsultation(ctx, userId, text, ev);
   }
 
   bot.use(async (ctx, next) => {

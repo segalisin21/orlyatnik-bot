@@ -30,13 +30,24 @@ export function getTicketPriceToday(): TicketPrice {
 export function formatPriceTierText(): string {
   return (
     '🔥 1 смена (12–14 июня), заезд 12 июня:\n' +
-    '• До 31 мая включительно — 18 000 ₽\n' +
-    '• С 1 по 11 июня включительно — 21 000 ₽\n' +
-    '• Задаток для брони — 8 000 ₽'
+    '• До 20 мая (раннее бронирование) — 16 000 ₽\n' +
+    '• До 31 мая — 18 000 ₽\n' +
+    '• До 11 июня включительно — 21 000 ₽\n' +
+    '☀️ 2 смена (17–19 июля):\n' +
+    '• До 20 мая (раннее бронирование) — 16 000 ₽\n' +
+    '• После 20 мая — 18 000 ₽\n' +
+    '• За 2 недели до смены — 21 000 ₽\n' +
+    '🎁 Скидки (не суммируются): вдвоём — 17 000 ₽; компания от 5 — 17 000 ₽; от 10 — 16 000 ₽\n' +
+    'Задаток для фиксации места — 8 000 ₽ (всегда 8 000 ₽, без исключений).'
   );
 }
 
 export function formatCurrentPriceLine(): string {
   const price = getTicketPriceToday();
-  return `Сейчас путёвка на 1 смену — ${price.toLocaleString('ru-RU')} ₽ (задаток 8 000 ₽).`;
+  return `Актуальная цена 1-й смены (12–14 июня) на сегодня: ${price.toLocaleString('ru-RU')} ₽. Задаток — 8 000 ₽.`;
+}
+
+/** Полный блок цен и скидок для системного промпта LLM (Орлятник). */
+export function formatOrlyatnikPricingFacts(): string {
+  return `${formatPriceTierText()}\n${formatCurrentPriceLine()}`;
 }

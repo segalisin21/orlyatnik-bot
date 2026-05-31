@@ -42,14 +42,15 @@ export function getConfirmedShortMessage(event: string): string {
   if (event === 'pizhamnik' && kb.AFTER_RECEIPT_MESSAGE?.trim()) {
     return kb.AFTER_RECEIPT_MESSAGE.trim();
   }
-  const kbRec = kb as unknown as Record<string, unknown>;
-  const elvira = managerElviraUrl(kbRec);
-  const kristina = managerKristinaUrl(kbRec);
+  const elviraUser = (
+    (kb as { MANAGER_ELVIRA_USERNAME?: string }).MANAGER_ELVIRA_USERNAME ?? env.MANAGER_ELVIRA_USERNAME
+  ).replace(/^@/, '');
+  const kristinaUser = env.MANAGER_TG_USERNAME.replace(/^@/, '');
   return (
     'Ты уже в списке участников! 🎉\n\n' +
     'Общий чат участников создадим чуть позже — ссылка прилетит сюда.\n\n' +
-    `Организационные и финансовые вопросы — Эльвира: ${elvira}\n` +
-    `Главный организатор — Кристина: ${kristina}`
+    `Организационные и финансовые вопросы — Эльвира @${elviraUser}\n` +
+    `Главный организатор — Кристина @${kristinaUser}`
   );
 }
 
