@@ -27,7 +27,7 @@ import {
   invalidateCache,
   type FormField,
 } from './fsm.js';
-import { getSalesReply, getFormModeReply, reviveAnswer } from './llm.js';
+import { getSalesReply, getFormModeReply, reviveAnswer, pingLlm } from './llm.js';
 import { transcribeVoice } from './voice.js';
 import {
   logEvent,
@@ -176,6 +176,35 @@ function anketaEditChoiceKeyboard(): InlineKeyboard {
 
 /** userId → поле, которое пользователь редактирует (ввод нового значения в следующем сообщении). */
 const pendingAnketaEdit = new Map<number, AnketaEditField>();
+
+/** Лёгкая история диалога в памяти для контекста уточняющих вопросов в LLM. */
+interface DialogTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+const DIALOG_HISTORY_MAX = 6; // последние N реплик (user+assistant)
+const DIALOG_TTL_MS = 30 * 60 * 1000;
+const dialogHistory = new Map<number, { turns: DialogTurn[]; ts: number }>();
+
+function getDialogHistory(userId: number): DialogTurn[] {
+  const e = dialogHistory.get(userId);
+  if (!e) return [];
+  if (Date.now() - e.ts > DIALOG_TTL_MS) {
+    dialogHistory.delete(userId);
+    return [];
+  }
+  return e.turns;
+}
+
+function pushDialog(userId: number, role: 'user' | 'assistant', content: string): void {
+  const trimmed = content.trim();
+  if (!trimmed) return;
+  const e = dialogHistory.get(userId) ?? { turns: [], ts: Date.now() };
+  e.turns.push({ role, content: trimmed.slice(0, 1000) });
+  if (e.turns.length > DIALOG_HISTORY_MAX) e.turns = e.turns.slice(-DIALOG_HISTORY_MAX);
+  e.ts = Date.now();
+  dialogHistory.set(userId, e);
+}
 
 /** Фразы, по которым переключается статус. Бот должен явно их подсказывать. */
 const PHRASE_BOOK = /(хочу|готов|давай)\s*(забронировать|записаться|участвовать|ехать)|бронирую|записываюсь|записывай|готов\s*забронировать|готов\s*записаться/i;
@@ -610,12 +639,17 @@ export function createBot(): Bot {
     const stored = await getAnswerFromStorage(norm);
     if (stored) {
       const revived = await reviveAnswer(stored);
+      pushDialog(userId, 'user', text);
+      pushDialog(userId, 'assistant', revived);
       await ctx.reply(revived);
       return;
     }
-    const reply = await getSalesReply(text, ev);
-    await saveAnswer(text, reply);
-    await ctx.reply(reply);
+    const history = getDialogHistory(userId);
+    const reply = await getSalesReply(text, ev, history);
+    if (reply.ok) await saveAnswer(text, reply.text);
+    pushDialog(userId, 'user', text);
+    pushDialog(userId, 'assistant', reply.text);
+    await ctx.reply(reply.text);
   }
 
   bot.use(async (ctx, next) => {
@@ -1579,6 +1613,11 @@ export function createBot(): Bot {
           logger.error('Broadcast error', { error: String(e) });
           await ctx.reply('Ошибка при рассылке.');
         }
+        return;
+      }
+      if (text === '/diag') {
+        const ping = await pingLlm();
+        await ctx.reply(ping.ok ? `LLM OK: ${ping.detail}` : `LLM ОШИБКА: ${ping.detail}`);
         return;
       }
       if (text === '/start' || text.startsWith('/start ') || text === '/admin') {

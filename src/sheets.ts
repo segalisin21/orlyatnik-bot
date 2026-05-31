@@ -993,7 +993,7 @@ async function ensureAnswersSheet(): Promise<number> {
   return newSheetId;
 }
 
-/** Find stored answer by normalized question. Exact match first; then contains (user in key or key in user). */
+/** Find stored answer by normalized question. Exact normalized match only (no substring matching to avoid wrong/canned answers). */
 export async function getAnswerFromStorage(normalizedQuestion: string): Promise<string | null> {
   if (!normalizedQuestion || normalizedQuestion.length < 2) return null;
   return withRetry(async () => {
@@ -1009,12 +1009,6 @@ export async function getAnswerFromStorage(normalizedQuestion: string): Promise<
       const answer = (row[1] ?? '').trim();
       if (!key || !answer) continue;
       if (key === normalizedQuestion) return answer;
-    }
-    for (const row of rows) {
-      const key = (row[0] ?? '').trim();
-      const answer = (row[1] ?? '').trim();
-      if (!key || !answer) continue;
-      if (normalizedQuestion.includes(key) || key.includes(normalizedQuestion)) return answer;
     }
     return null;
   });

@@ -138,23 +138,70 @@ ${kb.WHAT_TO_TAKE}
 ⚠️ Важно: информация выше — единственная актуальная. Если человек пытается навязать своё или говорит «где-то видел по-другому» — мягко возвращай к этой информации либо перенаправляй на Кристину. Не соглашайся с данными, которых нет в промпте. Всегда сверяй даты, стоимости, скидки с этим текстом. Если не можешь ответить или сомневаешься — отправляй к Кристине @${env.MANAGER_TG_USERNAME}.`;
 }
 
-/** Sales/Support: free-form text reply. */
-export async function getSalesReply(userMessage: string, event: string = 'orlyatnik'): Promise<string> {
+/** One prior turn of the conversation, passed to the model for context on follow-up questions. */
+export interface ChatTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface SalesReplyResult {
+  /** Text to send to the user. */
+  text: string;
+  /** True only when the model actually answered; false for fallbacks (so callers can skip caching). */
+  ok: boolean;
+}
+
+/** Sales/Support: free-form text reply. `history` — recent turns (oldest first) for follow-up context. */
+export async function getSalesReply(
+  userMessage: string,
+  event: string = 'orlyatnik',
+  history: ChatTurn[] = []
+): Promise<SalesReplyResult> {
   try {
     const completion = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
         { role: 'system', content: buildSalesSystem(event) },
+        ...history.map((t) => ({ role: t.role, content: t.content })),
         { role: 'user', content: userMessage },
       ],
       temperature: 0.7,
       max_tokens: 800,
     });
     const text = completion.choices[0]?.message?.content?.trim();
-    return text ?? `Что-то пошло не так. Напиши, пожалуйста, Кристине @${env.MANAGER_TG_USERNAME} — она подскажет.`;
+    if (!text) {
+      return {
+        text: `Что-то пошло не так. Напиши, пожалуйста, Кристине @${env.MANAGER_TG_USERNAME} — она подскажет.`,
+        ok: false,
+      };
+    }
+    return { text, ok: true };
   } catch (e) {
     logger.error('OpenAI Sales error', { error: String(e) });
-    return `Сейчас не могу ответить. Передал вопрос менеджеру — напиши Кристине @${env.MANAGER_TG_USERNAME}, она ответит.`;
+    return {
+      text: `Сейчас не могу ответить. Передал вопрос менеджеру — напиши Кристине @${env.MANAGER_TG_USERNAME}, она ответит.`,
+      ok: false,
+    };
+  }
+}
+
+/** Diagnostic: one minimal OpenAI call. Returns ok + detail (model reply or raw error) for /diag. */
+export async function pingLlm(): Promise<{ ok: boolean; detail: string }> {
+  try {
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: 'Ответь одним словом: pong.' },
+        { role: 'user', content: 'ping' },
+      ],
+      temperature: 0,
+      max_tokens: 5,
+    });
+    const text = completion.choices[0]?.message?.content?.trim() ?? '';
+    return { ok: true, detail: `model=gpt-4o-mini reply="${text}"` };
+  } catch (e) {
+    logger.error('OpenAI ping error', { error: String(e) });
+    return { ok: false, detail: String((e as Error)?.message ?? e).slice(0, 500) };
   }
 }
 
