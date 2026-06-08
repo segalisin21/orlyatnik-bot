@@ -17,6 +17,11 @@ export const env = {
     .split(',')
     .map((s) => Number(s.trim()))
     .filter((n) => n > 0),
+  /** Telegram chat/user ids for admin test broadcast (comma-separated). Legacy env fallback; prefer лист «Настройки». */
+  BROADCAST_TEST_CHAT_IDS: (process.env.BROADCAST_TEST_CHAT_IDS ?? '')
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => n > 0),
   MANAGER_TG_USERNAME: process.env.MANAGER_TG_USERNAME ?? 'krisis_pr',
   MANAGER_ELVIRA_USERNAME: process.env.MANAGER_ELVIRA_USERNAME ?? 'elvira_hairlux',
   CHAT_INVITE_LINK: process.env.CHAT_INVITE_LINK ?? '',
@@ -63,6 +68,8 @@ export const kb = {
   MANAGER_ELVIRA_URL: 'https://t.me/elvira_hairlux',
   MANAGER_KRISTINA_URL: `https://t.me/${env.MANAGER_TG_USERNAME}`,
   MEDIA_CHANNEL: 'https://t.me/orlyatnik',
+  /** Telegram chat_id для тестовой рассылки (через запятую). Редактируется в листе «Настройки». */
+  BROADCAST_TEST_CHAT_IDS: '',
   DEFAULT_SHIFT: '12–14 июня',
   AVAILABLE_SHIFTS: '12–14 июня, 17–19 июля',
   OBJECTION_PRICE: 'Это 7000 ₽ в день с проживанием, питанием, кальянами и всей движухой. Дешевле, чем отель без атмосферы 😎',

@@ -3,7 +3,7 @@
  * Admin can edit values via bot; no code deploy needed.
  */
 
-import { kb, kbPizhamnik } from './config.js';
+import { kb, kbPizhamnik, env } from './config.js';
 import { getConfigFromSheet, setConfigInSheet } from './sheets.js';
 import type { FormField } from './fsm.js';
 
@@ -67,6 +67,8 @@ export interface RuntimeKb {
   SECOND_BOOKING_WHO_PROMPT?: string;
   SECOND_BOOKING_SELF_BTN?: string;
   SECOND_BOOKING_OTHER_BTN?: string;
+  /** Telegram chat_id для тестовой рассылки (через запятую). */
+  BROADCAST_TEST_CHAT_IDS?: string;
 }
 
 /** Дефолты вопросов анкеты (лист «Настройки»: FIELD_PROMPT_*). */
@@ -166,6 +168,22 @@ export function getShiftsList(event?: string): string[] {
     .filter(Boolean);
 }
 
+/** Parse comma-separated Telegram ids (sheet «Настройки» → BROADCAST_TEST_CHAT_IDS). */
+export function parseBroadcastTestChatIds(raw: string | undefined): number[] {
+  return (raw ?? '')
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => n > 0);
+}
+
+/** Test broadcast recipients: sheet → env (legacy) → admins. */
+export function getBroadcastTestChatIds(adminFallback: number[]): number[] {
+  const fromSheet = parseBroadcastTestChatIds(getKb('orlyatnik').BROADCAST_TEST_CHAT_IDS);
+  if (fromSheet.length > 0) return fromSheet;
+  if (env.BROADCAST_TEST_CHAT_IDS.length > 0) return env.BROADCAST_TEST_CHAT_IDS;
+  return adminFallback;
+}
+
 /** Save one key to sheet and refresh cache. event = 'pizhamnik' uses sheet "Настройки Пижамник". */
 export async function updateConfigKey(key: string, value: string, event?: string): Promise<void> {
   await setConfigInSheet(key, value, event);
@@ -211,6 +229,7 @@ export const EDITABLE_KEYS: { key: string; label: string }[] = [
   { key: 'OBJECTION_NO_ALCOHOL', label: 'Возражение: не пью' },
   { key: 'OBJECTION_NO_COMPANY', label: 'Возражение: нет компании' },
   { key: 'MEDIA_CHANNEL', label: 'Ссылка на фото/видео' },
+  { key: 'BROADCAST_TEST_CHAT_IDS', label: 'Тестовая рассылка: chat_id' },
   { key: 'MANAGER_FOR_COMPLEX', label: 'Контакты менеджеров (текст)' },
   { key: 'AFTER_PAYMENT_INSTRUCTION', label: 'Инструкция после оплаты' },
   { key: 'CONSENT_PD_TEXT', label: 'Текст согласия на обработку ПД' },

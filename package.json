@@ -9,6 +9,7 @@
     "dev": "ts-node src/index.ts",
     "lint": "eslint src --ext .ts",
     "client-base": "ts-node scripts/build-client-base.ts",
+    "legacy-broadcast": "ts-node scripts/build-legacy-broadcast.ts",
     "seed:quote": "ts-node scripts/quote-answers-csv.ts",
     "seed:parse": "ts-node scripts/parse-chat-history.ts"
   },

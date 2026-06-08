@@ -4,7 +4,7 @@
 
 import { Bot, InlineKeyboard, type Context } from 'grammy';
 import { env, isAdmin, ROOT_EVENT_CHOICE_MESSAGE, FEATURE_PIZHAMNIK_UI_ENABLED } from './config.js';
-import { getKb, updateConfigKey, EDITABLE_KEYS, EDITABLE_KEYS_PIZHAMNIK, getShiftsList } from './runtime-config.js';
+import { getKb, updateConfigKey, EDITABLE_KEYS, EDITABLE_KEYS_PIZHAMNIK, getShiftsList, getBroadcastTestChatIds, parseBroadcastTestChatIds } from './runtime-config.js';
 import {
   collectProgramPhotoUrls,
   sendProgramPhotosOnly,
@@ -315,7 +315,10 @@ export function createBot(): Bot {
     await ctx.reply(prompt, next === 'shift' ? { reply_markup: getShiftKeyboard(p2.event) } : {});
   }
 
-  const adminBroadcastPending = new Map<number, { audience: 'all' | 'CONFIRMED' | 'waiting' }>();
+  type BroadcastPending =
+    | { kind: 'live'; audience: 'all' | 'CONFIRMED' | 'waiting' }
+    | { kind: 'test' };
+  const adminBroadcastPending = new Map<number, BroadcastPending>();
   const adminSettingsPending = new Map<number, { key: string; event?: string }>();
 
   function getAdminMenuKeyboard(): InlineKeyboard {
@@ -329,7 +332,43 @@ export function createBot(): Bot {
     return new InlineKeyboard()
       .text('Всем в таблице', 'admin_br_all')
       .text('Подтверждённые', 'admin_br_confirmed').row()
-      .text('Ждут оплаты / чек', 'admin_br_waiting');
+      .text('Ждут оплаты / чек', 'admin_br_waiting').row()
+      .text('🧪 Тестовая рассылка', 'admin_br_test')
+      .text('⚙ Тестовые id', 'admin_set_o_BROADCAST_TEST_CHAT_IDS');
+  }
+
+  function broadcastTestIdsSourceHint(): string {
+    const sheetRaw = getKb('orlyatnik').BROADCAST_TEST_CHAT_IDS?.trim() ?? '';
+    if (sheetRaw) return 'лист «Настройки»';
+    if (env.BROADCAST_TEST_CHAT_IDS.length > 0) return 'переменная окружения (legacy)';
+    return 'админы (fallback)';
+  }
+
+  function resolveBroadcastTestChatIds(): number[] {
+    return getBroadcastTestChatIds(adminChatIds());
+  }
+
+  async function runBroadcastSend(
+    chatIds: string[],
+    text: string,
+    logMeta: Record<string, unknown>
+  ): Promise<{ sent: number; failed: number }> {
+    let sent = 0;
+    let failed = 0;
+    const delayMs = 50;
+    for (const chatId of chatIds) {
+      if (!chatId.trim()) continue;
+      try {
+        await bot.api.sendMessage(chatId, text);
+        sent++;
+        await new Promise((r) => setTimeout(r, delayMs));
+      } catch (e) {
+        failed++;
+        logger.warn('Broadcast send failed', { chat_id: chatId, error: String(e) });
+      }
+    }
+    logger.info('Admin broadcast', { ...logMeta, sent, failed });
+    return { sent, failed };
   }
 
   /** Shared LLM consultation: exact cache or getSalesReply, one reply without link previews. */
@@ -1428,10 +1467,31 @@ export function createBot(): Bot {
       }
       if (data === 'admin_br_all' || data === 'admin_br_confirmed' || data === 'admin_br_waiting') {
         const audience = data === 'admin_br_all' ? 'all' : data === 'admin_br_confirmed' ? 'CONFIRMED' : 'waiting';
-        adminBroadcastPending.set(fromId!, { audience });
+        adminBroadcastPending.set(fromId!, { kind: 'live', audience });
         await safeAnswer();
         await ctx.reply(
           'Напиши текст сообщения для рассылки (одним сообщением). Отправь /cancel чтобы отменить.',
+          { reply_markup: { remove_keyboard: true } }
+        );
+        return;
+      }
+      if (data === 'admin_br_test') {
+        await safeAnswer();
+        const testIds = resolveBroadcastTestChatIds();
+        if (testIds.length === 0) {
+          await ctx.reply(
+            'Нет тестовых получателей.\n\n' +
+              'Нажми «⚙ Тестовые id» ниже или ⚙ Настройки → «Тестовая рассылка: chat_id».\n' +
+              'Укажи Telegram id через запятую — сохранится в лист «Настройки» в Google Sheets.',
+            { reply_markup: getBroadcastAudienceKeyboard() }
+          );
+          return;
+        }
+        adminBroadcastPending.set(fromId!, { kind: 'test' });
+        const idsHint = testIds.join(', ');
+        await ctx.reply(
+          `🧪 Тестовая рассылка на chat_id: ${idsHint} (${broadcastTestIdsSourceHint()}).\n\n` +
+            'Напиши текст сообщения (одним сообщением). /cancel — отмена.',
           { reply_markup: { remove_keyboard: true } }
         );
         return;
@@ -1513,7 +1573,12 @@ export function createBot(): Bot {
         const label = keysList.find((e) => e.key === key)?.label ?? key;
         adminSettingsPending.set(fromId!, { key, event: isPizhamnik ? 'pizhamnik' : undefined });
         await safeAnswer();
-        await ctx.reply(`Введите новое значение для «${label}» (одним сообщением). /cancel — отмена.`, { reply_markup: { remove_keyboard: true } });
+        const prompt =
+          key === 'BROADCAST_TEST_CHAT_IDS'
+            ? 'Введи Telegram chat_id для тестовой рассылки через запятую (например 123456789,987654321).\n' +
+              'Сохранится в лист «Настройки» (ключ BROADCAST_TEST_CHAT_IDS). /cancel — отмена.'
+            : `Введите новое значение для «${label}» (одним сообщением). /cancel — отмена.`;
+        await ctx.reply(prompt, { reply_markup: { remove_keyboard: true } });
         return;
       }
       if (!data.startsWith('confirm_')) {
@@ -1592,7 +1657,17 @@ export function createBot(): Bot {
         try {
           await updateConfigKey(settingsPending.key, text, settingsPending.event);
           const label = (settingsPending.event === 'pizhamnik' ? EDITABLE_KEYS_PIZHAMNIK : EDITABLE_KEYS).find((e) => e.key === settingsPending.key)?.label ?? settingsPending.key;
-          await ctx.reply(`✅ Сохранено: «${label}». Значение записано в лист «${sheetLabel}» — бот уже использует его.`);
+          if (settingsPending.key === 'BROADCAST_TEST_CHAT_IDS') {
+            const ids = parseBroadcastTestChatIds(text);
+            await ctx.reply(
+              `✅ Сохранено: «${label}». Записано в лист «${sheetLabel}».\n` +
+                (ids.length > 0
+                  ? `Тестовая рассылка пойдёт на ${ids.length} id: ${ids.join(', ')}`
+                  : 'Список пуст — при тесте будут использованы id админов (fallback).')
+            );
+          } else {
+            await ctx.reply(`✅ Сохранено: «${label}». Значение записано в лист «${sheetLabel}» — бот уже использует его.`);
+          }
         } catch (e) {
           logger.error('Settings save error', { error: String(e), key: settingsPending.key, event: settingsPending.event });
           await ctx.reply(`Ошибка записи в таблицу. Проверь, что лист «${sheetLabel}» есть в таблице.`);
@@ -1603,26 +1678,34 @@ export function createBot(): Bot {
       if (pending) {
         adminBroadcastPending.delete(userId);
         try {
+          if (pending.kind === 'test') {
+            const testIds = resolveBroadcastTestChatIds();
+            if (testIds.length === 0) {
+              await ctx.reply('Нет получателей для тестовой рассылки. Задай id в ⚙ Настройки → «Тестовая рассылка: chat_id».');
+              return;
+            }
+            const { sent, failed } = await runBroadcastSend(
+              testIds.map(String),
+              text,
+              { mode: 'test', chat_ids: testIds }
+            );
+            await ctx.reply(
+              `🧪 Тестовая рассылка завершена. Отправлено: ${sent}, ошибок: ${failed}.\n` +
+                `Получатели: ${testIds.join(', ')}`
+            );
+            return;
+          }
           const list = await getParticipantsForBroadcast(pending.audience);
           if (list.length === 0) {
             await ctx.reply('Нет получателей для выбранной категории.');
             return;
           }
-          let sent = 0;
-          let failed = 0;
-          const delayMs = 50;
-          for (const p of list) {
-            try {
-              await bot.api.sendMessage(p.chat_id, text);
-              sent++;
-              await new Promise((r) => setTimeout(r, delayMs));
-            } catch (e) {
-              failed++;
-              logger.warn('Broadcast send failed', { chat_id: p.chat_id, user_id: p.user_id, error: String(e) });
-            }
-          }
+          const { sent, failed } = await runBroadcastSend(
+            list.map((p) => p.chat_id),
+            text,
+            { mode: 'live', audience: pending.audience }
+          );
           await ctx.reply(`Рассылка завершена. Отправлено: ${sent}, ошибок: ${failed}.`);
-          logger.info('Admin broadcast', { audience: pending.audience, sent, failed });
         } catch (e) {
           logger.error('Broadcast error', { error: String(e) });
           await ctx.reply('Ошибка при рассылке.');
