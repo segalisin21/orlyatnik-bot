@@ -3,7 +3,7 @@
  * Ключи листа «Настройки»: PROGRAM_PHOTO_1..3 (HTTPS). Для миграции читаются и BOOKING_CONFIRM_PHOTO_1..3.
  */
 
-import type { Api, InlineKeyboard } from 'grammy';
+import { InputFile, type Api, type InlineKeyboard } from 'grammy';
 
 import { logger } from './logger.js';
 
@@ -37,9 +37,42 @@ export function normalizePhotoUrlForTelegram(raw: string): string {
     .replace(/^[\s"'«]+|[\s"'»]+$/g, '');
   const id = extractGoogleDriveFileId(trimmed);
   if (id) {
-    return `https://drive.google.com/thumbnail?id=${id}&sz=w2000`;
+    return `https://drive.google.com/uc?export=download&id=${id}`;
   }
   return trimmed;
+}
+
+function isGoogleDriveUrl(raw: string): boolean {
+  return extractGoogleDriveFileId(raw) !== null;
+}
+
+async function downloadPhoto(url: string): Promise<Buffer | null> {
+  try {
+    const res = await fetch(url, { redirect: 'follow' });
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 16) return null;
+    const head = buf.subarray(0, 64).toString('utf8').toLowerCase();
+    if (head.includes('<!doctype') || head.includes('<html')) return null;
+    return buf;
+  } catch (e) {
+    logger.warn('downloadPhoto failed', { error: String(e), url });
+    return null;
+  }
+}
+
+/** Для Google Drive скачиваем файл и отдаём InputFile — Telegram не всегда может забрать Drive по URL. */
+async function resolvePhotoMedia(raw: string): Promise<string | InputFile | null> {
+  const url = normalizePhotoUrlForTelegram(raw);
+  if (!/^https?:\/\//i.test(url)) return null;
+
+  if (isGoogleDriveUrl(raw)) {
+    const buf = await downloadPhoto(url);
+    if (!buf) return null;
+    return new InputFile(buf, 'photo.jpg');
+  }
+
+  return url;
 }
 
 function collectFromKeys(kb: Record<string, unknown>, keys: readonly string[]): string[] {
@@ -67,13 +100,26 @@ export async function sendPhotoUrl(
   rawUrl: string,
   caption?: string
 ): Promise<boolean> {
-  const url = normalizePhotoUrlForTelegram(rawUrl);
-  if (!/^https?:\/\//i.test(url)) return false;
+  const media = await resolvePhotoMedia(rawUrl);
+  if (!media) return false;
+
+  const opts = caption ? { caption } : undefined;
   try {
-    await api.sendPhoto(chatId, url, caption ? { caption } : undefined);
+    await api.sendPhoto(chatId, media, opts);
     return true;
   } catch (e) {
-    logger.warn('sendPhotoUrl failed', { error: String(e), chatId, url });
+    if (typeof media === 'string') {
+      const buf = await downloadPhoto(media);
+      if (buf) {
+        try {
+          await api.sendPhoto(chatId, new InputFile(buf, 'photo.jpg'), opts);
+          return true;
+        } catch (e2) {
+          logger.warn('sendPhotoUrl buffer fallback failed', { error: String(e2), chatId, url: media });
+        }
+      }
+    }
+    logger.warn('sendPhotoUrl failed', { error: String(e), chatId, url: typeof media === 'string' ? media : rawUrl });
     return false;
   }
 }
@@ -102,22 +148,24 @@ export async function sendProgramPhotosOnly(
   rawUrls: string[],
   replyMarkup: InlineKeyboard
 ): Promise<boolean> {
-  const urls = rawUrls
-    .slice(0, 3)
-    .map(normalizePhotoUrlForTelegram)
-    .filter((u) => /^https?:\/\//i.test(u));
-  if (urls.length === 0) return false;
+  const mediaList = (
+    await Promise.all(rawUrls.slice(0, 3).map((raw) => resolvePhotoMedia(raw)))
+  ).filter((m): m is string | InputFile => m !== null);
+  if (mediaList.length === 0) return false;
 
   try {
-    if (urls.length === 1) {
-      await api.sendPhoto(chatId, urls[0]);
+    if (mediaList.length === 1) {
+      await api.sendPhoto(chatId, mediaList[0]);
     } else {
-      await api.sendMediaGroup(chatId, urls.map((media) => ({ type: 'photo' as const, media })));
+      await api.sendMediaGroup(
+        chatId,
+        mediaList.map((media) => ({ type: 'photo' as const, media }))
+      );
     }
     await api.sendMessage(chatId, ZWSP, { reply_markup: replyMarkup });
     return true;
   } catch (e) {
-    logger.warn('sendProgramPhotosOnly failed', { error: String(e), chatId, urls });
+    logger.warn('sendProgramPhotosOnly failed', { error: String(e), chatId, count: mediaList.length });
     return false;
   }
 }

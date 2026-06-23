@@ -880,20 +880,29 @@ export function createBot(): Bot {
         const kbRec = kb as unknown as Record<string, unknown>;
         const menuKb = eventStartKeyboard(ev);
         const cover = (kb.PROGRAM_COVER_PHOTO ?? '').trim();
+        const photos = collectProgramPhotoUrls(kbRec);
+        const text = (kb.PROGRAM_TEXT ?? '').trim();
+        let menuSent = false;
+
         if (cover) {
           await sendPhotoUrl(bot.api, chatId, cover, 'РАСШИРЕННАЯ ПРОГРАММА СМЕНЫ');
-        }
-        const text = kb.PROGRAM_TEXT ?? '';
-        if (text) {
-          await ctx.reply(text, { reply_markup: menuKb });
-        } else if (!cover) {
-          const photos = collectProgramPhotoUrls(kbRec);
-          const ok = photos.length > 0 && (await sendProgramPhotosOnly(bot.api, chatId, photos, menuKb));
-          if (!ok && !cover) {
+        } else if (photos.length > 0) {
+          const ok = await sendProgramPhotosOnly(bot.api, chatId, photos, menuKb);
+          menuSent = ok;
+          if (!ok && !text) {
             await ctx.reply('Программа скоро появится. Загляни в «Условия и стоимость» или напиши вопрос.', {
               reply_markup: menuKb,
             });
+            menuSent = true;
           }
+        }
+
+        if (text) {
+          await ctx.reply(text, menuSent ? {} : { reply_markup: menuKb });
+        } else if (!cover && photos.length === 0) {
+          await ctx.reply('Программа скоро появится. Загляни в «Условия и стоимость» или напиши вопрос.', {
+            reply_markup: menuKb,
+          });
         }
         await safeAnswer();
         return;
