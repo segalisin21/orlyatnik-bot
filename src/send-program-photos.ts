@@ -139,6 +139,33 @@ export async function sendPhotoUrlsSequence(
   return sent;
 }
 
+/** Альбом из 1–3 фото без подписи (без клавиатуры). */
+export async function sendPhotoUrlsAlbum(
+  api: Api,
+  chatId: string | number,
+  rawUrls: string[]
+): Promise<boolean> {
+  const mediaList = (
+    await Promise.all(rawUrls.slice(0, 3).map((raw) => resolvePhotoMedia(raw)))
+  ).filter((m): m is string | InputFile => m !== null);
+  if (mediaList.length === 0) return false;
+
+  try {
+    if (mediaList.length === 1) {
+      await api.sendPhoto(chatId, mediaList[0]);
+    } else {
+      await api.sendMediaGroup(
+        chatId,
+        mediaList.map((media) => ({ type: 'photo' as const, media }))
+      );
+    }
+    return true;
+  } catch (e) {
+    logger.warn('sendPhotoUrlsAlbum failed', { error: String(e), chatId, count: mediaList.length });
+    return false;
+  }
+}
+
 const ZWSP = '\u2060';
 
 /** Альбом из 1–3 фото без подписей; затем невидимое сообщение только с клавиатурой (у API нельзя прикрепить клавиатуру к media group). */

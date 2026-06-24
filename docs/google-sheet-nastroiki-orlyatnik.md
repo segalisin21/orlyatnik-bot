@@ -32,7 +32,9 @@
 | `REVIEWS_BUTTON_LABEL` | Подпись кнопки отзывов в главном меню |
 | `REVIEWS_INTRO_TEXT` | Текст при нажатии «Отзывы» |
 | `REVIEWS_POST_URL` | Ссылка на пост с отзывами (например `https://t.me/orlyatnik/286`) |
-| `CONFIRMED_CELEBRATION_PHOTO` | Картинка «Ты в деле!» после подтверждения оплаты (одна для всех смен) |
+| `CONFIRMED_CELEBRATION_PHOTO` | Одна картинка fallback, если для смены не заданы `CONFIRMED_PHOTO_SHIFT_*` |
+| `CONFIRMED_PHOTO_SHIFT_0_1` … `CONFIRMED_PHOTO_SHIFT_0_3` | До 3 фото после оплаты для **17–19 июля** (альбом) |
+| `CONFIRMED_PHOTO_SHIFT_1_1` … `CONFIRMED_PHOTO_SHIFT_1_3` | До 3 фото после оплаты для **14–16 августа** (альбом) |
 | `CONFIRMED_MESSAGE_TEXT` | Текст поздравления после оплаты (fallback, если нет текста для смены) |
 | `CONFIRMED_MESSAGE_SHIFT_0` | Текст после оплаты для **17–19 июля** (1-я смена в `AVAILABLE_SHIFTS`) |
 | `CONFIRMED_MESSAGE_SHIFT_1` | Текст после оплаты для **14–16 августа** (2-я смена в `AVAILABLE_SHIFTS`) |

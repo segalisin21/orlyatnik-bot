@@ -35,6 +35,12 @@ export interface RuntimeKb {
   CONDITIONS_TERMS_PHOTO?: string;
   PROGRAM_COVER_PHOTO?: string;
   CONFIRMED_CELEBRATION_PHOTO?: string;
+  CONFIRMED_PHOTO_SHIFT_0_1?: string;
+  CONFIRMED_PHOTO_SHIFT_0_2?: string;
+  CONFIRMED_PHOTO_SHIFT_0_3?: string;
+  CONFIRMED_PHOTO_SHIFT_1_1?: string;
+  CONFIRMED_PHOTO_SHIFT_1_2?: string;
+  CONFIRMED_PHOTO_SHIFT_1_3?: string;
   CONFIRMED_MESSAGE_TEXT?: string;
   CONFIRMED_MESSAGE_SHIFT_0?: string;
   CONFIRMED_MESSAGE_SHIFT_1?: string;
@@ -198,25 +204,56 @@ function confirmedMessageForShiftIndex(kb: Record<string, unknown>, index: numbe
   return text || null;
 }
 
+function resolveParticipantShiftIndex(
+  event: string,
+  shift: string | undefined,
+  kb: Record<string, unknown>
+): number {
+  const shifts = getShiftsList(event);
+  const tryLabel = (label: string): number => {
+    const trimmed = label.trim();
+    if (!trimmed) return -1;
+    return findShiftIndex(shifts, trimmed);
+  };
+
+  if (shift?.trim()) {
+    const idx = tryLabel(shift);
+    if (idx >= 0) return idx;
+  }
+  if (!shift?.trim()) {
+    const idx = tryLabel(String(kb.DEFAULT_SHIFT ?? ''));
+    if (idx >= 0) return idx;
+  }
+  return -1;
+}
+
+function confirmedPhotosForShiftIndex(kb: Record<string, unknown>, index: number): string[] {
+  if (index < 0) return [];
+  const urls: string[] = [];
+  for (let n = 1; n <= 3; n++) {
+    const url = (kb[`CONFIRMED_PHOTO_SHIFT_${index}_${n}`] as string | undefined)?.trim();
+    if (url) urls.push(url);
+  }
+  return urls;
+}
+
+/** URL фото поздравления после оплаты (до 3): по смене → CONFIRMED_CELEBRATION_PHOTO. */
+export function getConfirmedPhotoUrlsForShift(event: string, shift?: string): string[] {
+  const kb = getKb(event) as unknown as Record<string, unknown>;
+  const index = resolveParticipantShiftIndex(event, shift, kb);
+  const byShift = confirmedPhotosForShiftIndex(kb, index);
+  if (byShift.length > 0) return byShift;
+
+  const fallback = (kb.CONFIRMED_CELEBRATION_PHOTO as string | undefined)?.trim();
+  return fallback ? [fallback] : [];
+}
+
 /** Текст поздравления после оплаты: по смене участника → CONFIRMED_MESSAGE_TEXT → дефолт из кода. */
 export function getConfirmedMessageTextForShift(event: string, shift?: string): string {
   const kb = getKb(event) as unknown as Record<string, unknown>;
-  const shifts = getShiftsList(event);
-
-  const resolveByLabel = (label: string): string | null => {
-    const trimmed = label.trim();
-    if (!trimmed) return null;
-    const index = findShiftIndex(shifts, trimmed);
-    return confirmedMessageForShiftIndex(kb, index);
-  };
-
-  const byShift = resolveByLabel(shift ?? '');
+  const index = resolveParticipantShiftIndex(event, shift, kb);
+  const byShift = confirmedMessageForShiftIndex(kb, index);
   if (byShift) return byShift;
-
-  if (!shift?.trim()) {
-    const byDefault = resolveByLabel(String(kb.DEFAULT_SHIFT ?? ''));
-    if (byDefault) return byDefault;
-  }
 
   const generic = (kb.CONFIRMED_MESSAGE_TEXT as string | undefined)?.trim();
   return generic || CONFIRMED_MESSAGE_FALLBACK;
@@ -267,7 +304,13 @@ export const EDITABLE_KEYS: { key: string; label: string }[] = [
   { key: 'REVIEWS_BUTTON_LABEL', label: 'Кнопка: отзывы (подпись)' },
   { key: 'REVIEWS_INTRO_TEXT', label: 'Текст: отзывы' },
   { key: 'REVIEWS_POST_URL', label: 'Ссылка на пост с отзывами' },
-  { key: 'CONFIRMED_CELEBRATION_PHOTO', label: 'URL: поздравление после оплаты' },
+  { key: 'CONFIRMED_CELEBRATION_PHOTO', label: 'URL: поздравление (fallback)' },
+  { key: 'CONFIRMED_PHOTO_SHIFT_0_1', label: 'Фото после оплаты: 17–19 июля (1)' },
+  { key: 'CONFIRMED_PHOTO_SHIFT_0_2', label: 'Фото после оплаты: 17–19 июля (2)' },
+  { key: 'CONFIRMED_PHOTO_SHIFT_0_3', label: 'Фото после оплаты: 17–19 июля (3)' },
+  { key: 'CONFIRMED_PHOTO_SHIFT_1_1', label: 'Фото после оплаты: 14–16 августа (1)' },
+  { key: 'CONFIRMED_PHOTO_SHIFT_1_2', label: 'Фото после оплаты: 14–16 августа (2)' },
+  { key: 'CONFIRMED_PHOTO_SHIFT_1_3', label: 'Фото после оплаты: 14–16 августа (3)' },
   { key: 'CONFIRMED_MESSAGE_TEXT', label: 'Текст после оплаты (fallback)' },
   { key: 'CONFIRMED_MESSAGE_SHIFT_0', label: 'Текст после оплаты: 17–19 июля' },
   { key: 'CONFIRMED_MESSAGE_SHIFT_1', label: 'Текст после оплаты: 14–16 августа' },

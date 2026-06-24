@@ -119,6 +119,14 @@ export const kb = {
   REVIEWS_POST_URL: 'https://t.me/orlyatnik/286',
   CONFIRMED_CELEBRATION_PHOTO:
     'https://drive.google.com/file/d/1H7ANuUjtDlqJdGv7IOyEAkTJOB2iGNzJ/view?usp=sharing',
+  /** Фото после оплаты по сменам (до 3 на смену; индекс смены = порядок в AVAILABLE_SHIFTS). */
+  CONFIRMED_PHOTO_SHIFT_0_1:
+    'https://drive.google.com/file/d/1H7ANuUjtDlqJdGv7IOyEAkTJOB2iGNzJ/view?usp=sharing',
+  CONFIRMED_PHOTO_SHIFT_0_2: '',
+  CONFIRMED_PHOTO_SHIFT_0_3: '',
+  CONFIRMED_PHOTO_SHIFT_1_1: '',
+  CONFIRMED_PHOTO_SHIFT_1_2: '',
+  CONFIRMED_PHOTO_SHIFT_1_3: '',
   CONFIRMED_MESSAGE_TEXT:
     'Поздравляем! Регистрация прошла успешно! 🥂🥳 Твой задаток в размере 8 000 руб. зафиксирован. Ты официальный участник самого безумного «Шапито» этого лета!\n\n' +
     'Нас будет много — от 50 до 120 самых заряженных людей на одной волне. Общий чат участников мы создадим чуть позже, ссылка прилетит сюда.',

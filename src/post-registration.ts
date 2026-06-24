@@ -4,8 +4,8 @@
 
 import { InlineKeyboard, type Api } from 'grammy';
 import { env } from './config.js';
-import { getConfirmedMessageTextForShift, getKb } from './runtime-config.js';
-import { sendPhotoUrl } from './send-program-photos.js';
+import { getConfirmedMessageTextForShift, getConfirmedPhotoUrlsForShift, getKb } from './runtime-config.js';
+import { sendPhotoUrlsAlbum } from './send-program-photos.js';
 import { logger } from './logger.js';
 
 export function buildSecondBookingFinalKeyboard(): InlineKeyboard {
@@ -71,10 +71,10 @@ export async function sendPostRegistrationFlow(
   }
 
   const kb = getKb('orlyatnik') as unknown as Record<string, unknown>;
-  const celebration = (kb.CONFIRMED_CELEBRATION_PHOTO as string | undefined)?.trim();
-  if (celebration) {
-    const ok = await sendPhotoUrl(api, chatId, celebration);
-    if (!ok) logger.warn('CONFIRMED_CELEBRATION_PHOTO failed', { chatId });
+  const photoUrls = getConfirmedPhotoUrlsForShift('orlyatnik', shift);
+  if (photoUrls.length > 0) {
+    const ok = await sendPhotoUrlsAlbum(api, chatId, photoUrls);
+    if (!ok) logger.warn('confirmed photos failed', { chatId, shift, count: photoUrls.length });
   }
 
   const messageText = getConfirmedMessageTextForShift('orlyatnik', shift);
