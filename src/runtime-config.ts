@@ -15,6 +15,8 @@ export interface RuntimeKb {
   NEXT_SHIFT_TEXT: string;
   LOCATION: string;
   DATES: string;
+  /** Главный контекст для ответов LLM (лист «Настройки»). */
+  LLM_CONTEXT?: string;
   WHAT_INCLUDED: string;
   WHAT_TO_TAKE: string;
   PRICE: number;
@@ -34,6 +36,8 @@ export interface RuntimeKb {
   PROGRAM_COVER_PHOTO?: string;
   CONFIRMED_CELEBRATION_PHOTO?: string;
   CONFIRMED_MESSAGE_TEXT?: string;
+  CONFIRMED_MESSAGE_SHIFT_0?: string;
+  CONFIRMED_MESSAGE_SHIFT_1?: string;
   LOOKS_REFERENCES_URL?: string;
   /** URL фото для кнопки «Узнать программу» (лист «Настройки»). */
   PROGRAM_PHOTO_1?: string;
@@ -158,6 +162,22 @@ export function getKb(event?: string): RuntimeKb {
   return getKbOrlyatnik();
 }
 
+/** Нормализует подпись смены для сравнения (тире, пробелы, регистр). */
+export function normalizeShiftLabel(label: string): string {
+  return label
+    .trim()
+    .toLowerCase()
+    .replace(/[–—−‑]/g, '-')
+    .replace(/\s+/g, ' ');
+}
+
+/** Индекс смены в AVAILABLE_SHIFTS или -1. */
+export function findShiftIndex(shifts: string[], label: string): number {
+  const key = normalizeShiftLabel(label);
+  if (!key) return -1;
+  return shifts.findIndex((s) => normalizeShiftLabel(s) === key);
+}
+
 /** List of available shifts (from AVAILABLE_SHIFTS, comma-separated). */
 export function getShiftsList(event?: string): string[] {
   const raw = getKb(event).AVAILABLE_SHIFTS || '';
@@ -165,6 +185,41 @@ export function getShiftsList(event?: string): string[] {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+const CONFIRMED_MESSAGE_FALLBACK =
+  'Поздравляем! Регистрация прошла успешно! 🥂🥳 Твой задаток в размере 8 000 руб. зафиксирован. Ты официальный участник самого безумного «Шапито» этого лета!\n\n' +
+  'Нас будет много — от 50 до 120 самых заряженных людей на одной волне. Общий чат участников мы создадим чуть позже, ссылка прилетит сюда.';
+
+function confirmedMessageForShiftIndex(kb: Record<string, unknown>, index: number): string | null {
+  if (index < 0) return null;
+  const key = `CONFIRMED_MESSAGE_SHIFT_${index}`;
+  const text = (kb[key] as string | undefined)?.trim();
+  return text || null;
+}
+
+/** Текст поздравления после оплаты: по смене участника → CONFIRMED_MESSAGE_TEXT → дефолт из кода. */
+export function getConfirmedMessageTextForShift(event: string, shift?: string): string {
+  const kb = getKb(event) as unknown as Record<string, unknown>;
+  const shifts = getShiftsList(event);
+
+  const resolveByLabel = (label: string): string | null => {
+    const trimmed = label.trim();
+    if (!trimmed) return null;
+    const index = findShiftIndex(shifts, trimmed);
+    return confirmedMessageForShiftIndex(kb, index);
+  };
+
+  const byShift = resolveByLabel(shift ?? '');
+  if (byShift) return byShift;
+
+  if (!shift?.trim()) {
+    const byDefault = resolveByLabel(String(kb.DEFAULT_SHIFT ?? ''));
+    if (byDefault) return byDefault;
+  }
+
+  const generic = (kb.CONFIRMED_MESSAGE_TEXT as string | undefined)?.trim();
+  return generic || CONFIRMED_MESSAGE_FALLBACK;
 }
 
 /** Parse comma-separated Telegram ids (sheet «Настройки» → BROADCAST_TEST_CHAT_IDS). */
@@ -195,6 +250,7 @@ export async function updateConfigKey(key: string, value: string, event?: string
 
 /** Keys admins can edit from the menu, with short labels. Даты и тексты берутся из листа «Настройки». */
 export const EDITABLE_KEYS: { key: string; label: string }[] = [
+  { key: 'LLM_CONTEXT', label: 'Контекст для LLM' },
   { key: 'DATES', label: 'Даты заезда/выезда' },
   { key: 'NEXT_SHIFT_TEXT', label: 'Ближайшая смена (даты)' },
   { key: 'DEFAULT_SHIFT', label: 'Смена по умолчанию' },
@@ -212,7 +268,9 @@ export const EDITABLE_KEYS: { key: string; label: string }[] = [
   { key: 'REVIEWS_INTRO_TEXT', label: 'Текст: отзывы' },
   { key: 'REVIEWS_POST_URL', label: 'Ссылка на пост с отзывами' },
   { key: 'CONFIRMED_CELEBRATION_PHOTO', label: 'URL: поздравление после оплаты' },
-  { key: 'CONFIRMED_MESSAGE_TEXT', label: 'Текст после подтверждения оплаты' },
+  { key: 'CONFIRMED_MESSAGE_TEXT', label: 'Текст после оплаты (fallback)' },
+  { key: 'CONFIRMED_MESSAGE_SHIFT_0', label: 'Текст после оплаты: 17–19 июля' },
+  { key: 'CONFIRMED_MESSAGE_SHIFT_1', label: 'Текст после оплаты: 14–16 августа' },
   { key: 'LOOKS_REFERENCES_URL', label: 'Ссылка: идеи образов' },
   { key: 'MANAGER_ELVIRA_URL', label: 'Ссылка: Эльвира (личка)' },
   { key: 'MANAGER_KRISTINA_URL', label: 'Ссылка: Кристина (личка)' },
@@ -245,6 +303,7 @@ export const EDITABLE_KEYS: { key: string; label: string }[] = [
 
 /** Keys admins can edit for Pizhamnik (sheet "Настройки Пижамник"). Даты берутся из таблицы. */
 export const EDITABLE_KEYS_PIZHAMNIK: { key: string; label: string }[] = [
+  { key: 'LLM_CONTEXT', label: 'Контекст для LLM' },
   { key: 'DATES', label: 'Даты заезда/выезда' },
   { key: 'NEXT_SHIFT_TEXT', label: 'Ближайшая смена (даты)' },
   { key: 'START_MESSAGE', label: 'Приветствие /start' },

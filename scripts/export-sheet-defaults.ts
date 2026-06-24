@@ -31,6 +31,7 @@ function orlyatnikRows(): [string, string][] {
   const rows: [string, string][] = [
     ['REGISTRATION_CLOSED', kb.REGISTRATION_CLOSED ? 'true' : 'false'],
     ['DATES', kb.DATES],
+    ['LLM_CONTEXT', (kb as { LLM_CONTEXT?: string }).LLM_CONTEXT ?? ''],
     ['NEXT_SHIFT_TEXT', kb.NEXT_SHIFT_TEXT],
     ['DEFAULT_SHIFT', kb.DEFAULT_SHIFT],
     ['AVAILABLE_SHIFTS', kb.AVAILABLE_SHIFTS],
@@ -48,6 +49,8 @@ function orlyatnikRows(): [string, string][] {
     ['REVIEWS_POST_URL', (kb as { REVIEWS_POST_URL?: string }).REVIEWS_POST_URL ?? ''],
     ['CONFIRMED_CELEBRATION_PHOTO', (kb as { CONFIRMED_CELEBRATION_PHOTO?: string }).CONFIRMED_CELEBRATION_PHOTO ?? ''],
     ['CONFIRMED_MESSAGE_TEXT', (kb as { CONFIRMED_MESSAGE_TEXT?: string }).CONFIRMED_MESSAGE_TEXT ?? ''],
+    ['CONFIRMED_MESSAGE_SHIFT_0', (kb as { CONFIRMED_MESSAGE_SHIFT_0?: string }).CONFIRMED_MESSAGE_SHIFT_0 ?? ''],
+    ['CONFIRMED_MESSAGE_SHIFT_1', (kb as { CONFIRMED_MESSAGE_SHIFT_1?: string }).CONFIRMED_MESSAGE_SHIFT_1 ?? ''],
     ['LOOKS_REFERENCES_URL', (kb as { LOOKS_REFERENCES_URL?: string }).LOOKS_REFERENCES_URL ?? ''],
     ['MANAGER_ELVIRA_URL', (kb as { MANAGER_ELVIRA_URL?: string }).MANAGER_ELVIRA_URL ?? ''],
     ['MANAGER_KRISTINA_URL', (kb as { MANAGER_KRISTINA_URL?: string }).MANAGER_KRISTINA_URL ?? ''],
@@ -79,6 +82,7 @@ function pizhamnikRows(): [string, string][] {
   const keys = [
     'REGISTRATION_CLOSED',
     'DATES',
+    'LLM_CONTEXT',
     'NEXT_SHIFT_TEXT',
     'START_MESSAGE',
     'PROGRAM_TEXT',

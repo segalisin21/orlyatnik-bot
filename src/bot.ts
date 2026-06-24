@@ -112,6 +112,35 @@ async function replySecondBookingWhoPrompt(ctx: Context): Promise<void> {
 
 const TELEGRAM_MESSAGE_MAX = 4096;
 
+function getAdminSettingValue(key: string, event?: string): string {
+  const kb = getKb(event === 'pizhamnik' ? 'pizhamnik' : 'orlyatnik');
+  if (key.startsWith('FIELD_PROMPT_')) {
+    const field = key.replace('FIELD_PROMPT_', '');
+    return (kb.field_prompts as Record<string, string>)[field] ?? '';
+  }
+  const raw = (kb as unknown as Record<string, unknown>)[key];
+  if (raw === undefined || raw === null) return '';
+  return typeof raw === 'string' ? raw : String(raw);
+}
+
+function formatAdminSettingCurrentBlock(value: string, maxLen = 3500): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '_(пусто — используется значение из кода)_';
+  if (trimmed.length <= maxLen) return trimmed;
+  return `${trimmed.slice(0, maxLen)}\n… (обрезано для отображения)`;
+}
+
+function buildAdminSettingEditPrompt(key: string, label: string, event?: string): string[] {
+  const current = formatAdminSettingCurrentBlock(getAdminSettingValue(key, event));
+  const header =
+    key === 'BROADCAST_TEST_CHAT_IDS'
+      ? 'Введи Telegram chat_id для тестовой рассылки через запятую (например 123456789,987654321).\n' +
+        'Сохранится в лист «Настройки» (ключ BROADCAST_TEST_CHAT_IDS).'
+      : `Введите новое значение для «${label}» (одним сообщением).`;
+  const footer = '/cancel — отмена.';
+  return splitTelegramMessage(`${header}\n\nТекущее значение:\n${current}\n\n${footer}`);
+}
+
 /** Разбивает длинный текст для нескольких sendMessage (лимит Telegram 4096). */
 function splitTelegramMessage(text: string, maxLen = TELEGRAM_MESSAGE_MAX): string[] {
   const t = text.trim();
@@ -1582,12 +1611,10 @@ export function createBot(): Bot {
         const label = keysList.find((e) => e.key === key)?.label ?? key;
         adminSettingsPending.set(fromId!, { key, event: isPizhamnik ? 'pizhamnik' : undefined });
         await safeAnswer();
-        const prompt =
-          key === 'BROADCAST_TEST_CHAT_IDS'
-            ? 'Введи Telegram chat_id для тестовой рассылки через запятую (например 123456789,987654321).\n' +
-              'Сохранится в лист «Настройки» (ключ BROADCAST_TEST_CHAT_IDS). /cancel — отмена.'
-            : `Введите новое значение для «${label}» (одним сообщением). /cancel — отмена.`;
-        await ctx.reply(prompt, { reply_markup: { remove_keyboard: true } });
+        const promptParts = buildAdminSettingEditPrompt(key, label, isPizhamnik ? 'pizhamnik' : undefined);
+        for (let i = 0; i < promptParts.length; i++) {
+          await ctx.reply(promptParts[i]!, i === 0 ? { reply_markup: { remove_keyboard: true } } : {});
+        }
         return;
       }
       if (!data.startsWith('confirm_')) {
@@ -1618,7 +1645,8 @@ export function createBot(): Bot {
       await sendPostRegistrationFlow(
         bot.api,
         updated.chat_id,
-        updated.event === 'pizhamnik' ? 'pizhamnik' : 'orlyatnik'
+        updated.event === 'pizhamnik' ? 'pizhamnik' : 'orlyatnik',
+        updated.shift
       );
       await safeAnswer('Оплата подтверждена');
       const msg = ctx.callbackQuery.message;

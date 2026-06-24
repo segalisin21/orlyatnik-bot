@@ -4,7 +4,7 @@
 
 import { InlineKeyboard, type Api } from 'grammy';
 import { env } from './config.js';
-import { getKb } from './runtime-config.js';
+import { getConfirmedMessageTextForShift, getKb } from './runtime-config.js';
 import { sendPhotoUrl } from './send-program-photos.js';
 import { logger } from './logger.js';
 
@@ -58,7 +58,8 @@ export function getConfirmedShortMessage(event: string): string {
 export async function sendPostRegistrationFlow(
   api: Api,
   chatId: string | number,
-  event: string = 'orlyatnik'
+  event: string = 'orlyatnik',
+  shift?: string
 ): Promise<void> {
   if (event === 'pizhamnik') {
     const kb = getKb('pizhamnik');
@@ -76,10 +77,7 @@ export async function sendPostRegistrationFlow(
     if (!ok) logger.warn('CONFIRMED_CELEBRATION_PHOTO failed', { chatId });
   }
 
-  const messageText =
-    (kb.CONFIRMED_MESSAGE_TEXT as string | undefined)?.trim() ||
-    'Поздравляем! Регистрация на 1 смену прошла успешно! 🥂🥳 Твой задаток в размере 8 000 руб. зафиксирован. Ты официальный участник самого безумного «Шапито» этого лета!\n\n' +
-      'Нас будет много — от 50 до 120 самых заряженных людей на одной волне. Общий чат участников мы создадим чуть позже, ссылка прилетит сюда.';
+  const messageText = getConfirmedMessageTextForShift('orlyatnik', shift);
   await api.sendMessage(chatId, messageText);
 
   const contactsKb = buildPostRegistrationKeyboard(kb);

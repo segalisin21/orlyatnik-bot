@@ -56,7 +56,7 @@ const REMINDER_PIZHAMNIK_BY_STATUS: Record<string, string> = {
 
 async function sendFinalToParticipant(p: Participant): Promise<void> {
   const ev = p.event === 'pizhamnik' ? 'pizhamnik' : 'orlyatnik';
-  await sendPostRegistrationFlow(bot.api, p.chat_id, ev);
+  await sendPostRegistrationFlow(bot.api, p.chat_id, ev, p.shift);
 }
 
 /** При нескольких строках на один chat_id — одно сообщение, обновляем все строки. */

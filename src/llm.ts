@@ -41,11 +41,26 @@ export interface SalesSystemOptions {
 
 const CAMP_SCALE = 'от 50 до 120 человек';
 
-function buildStrictFactsRules(elvira: string): string {
+function getLlmContext(kb: ReturnType<typeof getKb>): string {
+  return ((kb as { LLM_CONTEXT?: string }).LLM_CONTEXT ?? '').trim();
+}
+
+function buildPrimaryContextBlock(sheetContext: string): string {
+  if (!sheetContext) return '';
+  return `📌 ГЛАВНЫЙ КОНТЕКСТ (лист «Настройки», приоритет №1 — главный источник правды для ответов):
+${sheetContext}
+
+При любых противоречиях с блоками ниже — следуй этому контексту.`;
+}
+
+function buildStrictFactsRules(elvira: string, hasSheetContext: boolean): string {
+  const truthSource = hasSheetContext
+    ? 'блок «📌 ГЛАВНЫЙ КОНТЕКСТ» и при необходимости «📋 ДОПОЛНИТЕЛЬНЫЕ ФАКТЫ»'
+    : 'блок «📋 АКТУАЛЬНЫЕ ФАКТЫ»';
   return `
 🚫 ЗАПРЕЩЕНО ПРИДУМЫВАТЬ (строжайше — нарушение недопустимо):
 - Не выдумывай и не догадывай: даты, цены, скидки, программу, правила возврата, состав группы, точное число мест или зарегистрированных, адрес базы (кроме текста выше), реквизиты, статус оплаты пользователя.
-- Единственный источник правды — блок «📋 АКТУАЛЬНЫЕ ФАКТЫ» ниже. Если факта там нет — ты его НЕ знаешь.
+- Единственный источник правды — ${truthSource}. Если факта там нет — ты его НЕ знаешь.
 - Любой спорный, нестандартный или неоднозначный вопрос без точного ответа в фактах → сразу переводи на менеджера. Не пытайся «догадаться» и не давай общих фраз вместо эскалации.
 - Организационные и финансовые вопросы → Эльвира @${elvira}.
 - Сложные, спорные, нестандартные, сомнительные → Кристина @${env.MANAGER_TG_USERNAME} (можно также Эльвира @${elvira} для организационного).
@@ -70,9 +85,16 @@ function buildConfirmedParticipantBlock(event: string, elvira: string): string {
 Организационные и финансовые — Эльвира @${elvira}; спорное и сложное — Кристина @${env.MANAGER_TG_USERNAME}. Без длинных t.me-ссылок — только @username.`;
 }
 
-function buildOrlyatnikFactsBlock(kb: ReturnType<typeof getKb>, elvira: string): string {
+function buildOrlyatnikFactsBlock(
+  kb: ReturnType<typeof getKb>,
+  elvira: string,
+  hasSheetContext: boolean
+): string {
   const currentPrice = getTicketPriceToday();
-  return `📋 АКТУАЛЬНЫЕ ФАКТЫ (единственный источник правды — только это):
+  const header = hasSheetContext
+    ? '📋 ДОПОЛНИТЕЛЬНЫЕ ФАКТЫ (если не указано в главном контексте):'
+    : '📋 АКТУАЛЬНЫЕ ФАКТЫ (единственный источник правды — только это):';
+  return `${header}
 
 📍 Локация и даты:
 ${kb.LOCATION}
@@ -104,14 +126,18 @@ ${kb.WHAT_TO_TAKE}
 function buildSalesSystem(event: string = 'orlyatnik', opts: SalesSystemOptions = {}): string {
   const kb = getKb(event);
   const elvira = (kb as { MANAGER_ELVIRA_USERNAME?: string }).MANAGER_ELVIRA_USERNAME ?? env.MANAGER_ELVIRA_USERNAME;
+  const sheetContext = getLlmContext(kb);
+  const primaryBlock = buildPrimaryContextBlock(sheetContext);
+  const hasSheetContext = sheetContext.length > 0;
   const confirmedBlock = opts.confirmedParticipant ? buildConfirmedParticipantBlock(event, elvira) : '';
-  const strictRules = buildStrictFactsRules(elvira);
+  const strictRules = buildStrictFactsRules(elvira, hasSheetContext);
 
   if (event === 'pizhamnik') {
+    const factsHeader = hasSheetContext ? '📌 Дополнительные факты:' : '📌 Факты (только это):';
     return `Ты — живой организатор выезда «Пижамник» (21–22 марта, дом за городом).
 Тон: тёплый, живой, по-человечески. Используй 1–2 уместных эмодзи. Отвечай кратко и по делу.
 
-📌 Факты (только это):
+${primaryBlock ? `${primaryBlock}\n\n` : ''}${factsHeader}
 Даты: 21–22 марта. Заезд 21 марта в 14:00, выезд 22 марта в 14:00.
 Стоимость: ${kb.PRICE} ₽ (задаток ${kb.DEPOSIT} ₽, остаток ${(kb as { REMAINDER?: number }).REMAINDER ?? 4500} ₽ — не позднее чем за 7 дней до начала).
 Мест: ${(kb as { PLACES_LIMIT?: number }).PLACES_LIMIT ?? 21}.
@@ -143,7 +169,7 @@ ${strictRules}${confirmedBlock}`;
 - К бронированию: «Напиши «Хочу забронировать» или «Готов забронировать»» — только эти фразы запускают анкету в боте.
 - После анкеты бот сам даст реквизиты задатка ${kb.DEPOSIT} ₽. После оплаты — чек в бота. Общий чат создаётся позже.
 
-${buildOrlyatnikFactsBlock(kb, elvira)}
+${primaryBlock ? `${primaryBlock}\n\n` : ''}${buildOrlyatnikFactsBlock(kb, elvira, hasSheetContext)}
 
 ${strictRules}${confirmedBlock}`;
 }
@@ -264,8 +290,12 @@ export async function getFormModeReply(
   const kb = getKb(event);
   const eventName = event === 'pizhamnik' ? 'Пижамник' : 'Орлятник 21+';
   const elvira = (kb as { MANAGER_ELVIRA_USERNAME?: string }).MANAGER_ELVIRA_USERNAME ?? env.MANAGER_ELVIRA_USERNAME;
+  const sheetContext = getLlmContext(kb);
+  const contextBlock = sheetContext
+    ? `\n\nГлавный контекст (приоритет для любых фактов в ответе):\n${sheetContext}\n`
+    : '';
   const systemForm = `Ты помогаешь заполнить анкету участника «${eventName}». Стиль: живой, по-человечески, дружелюбно. В reply_text всегда пиши тепло и с 1–2 уместными эмодзи (🎉✨👍😊 и т.п.), без сухих фраз — как организатор в чате.
-
+${contextBlock}
 Не придумывай цены, даты и правила — если спрашивают не про анкету, коротко ответь по фактам или направь: организация/оплата — Эльвира @${elvira}, сложное — Кристина @${env.MANAGER_TG_USERNAME}.
 
 Поля анкеты: fio, city, dob, companions, phone, comment, shift.

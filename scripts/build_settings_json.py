@@ -199,6 +199,7 @@ def main() -> None:
     order = [
         "REGISTRATION_CLOSED",
         "DATES",
+        "LLM_CONTEXT",
         "NEXT_SHIFT_TEXT",
         "DEFAULT_SHIFT",
         "AVAILABLE_SHIFTS",
