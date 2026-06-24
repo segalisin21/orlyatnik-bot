@@ -33,7 +33,6 @@
 | `REVIEWS_POST_URL` | Ссылка на пост с отзывами (например `https://t.me/orlyatnik/286`) |
 | `CONFIRMED_CELEBRATION_PHOTO` | Картинка «Ты в деле!» после подтверждения оплаты |
 | `CONFIRMED_MESSAGE_TEXT` | Текст поздравления после оплаты |
-| `PACKING_LIST_PHOTO` | Чек-лист вещей (картинка) |
 | `LOOKS_REFERENCES_URL` | Ссылка на референсы образов (кнопка скрыта, если пусто) |
 | `MANAGER_ELVIRA_URL` | Личка Эльвиры (`https://t.me/elvira_hairlux`) |
 | `MANAGER_KRISTINA_URL` | Личка главного организатора |

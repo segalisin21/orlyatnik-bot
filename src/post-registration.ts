@@ -1,5 +1,5 @@
 /**
- * Сообщения после подтверждения оплаты (Орлятник): фото, текст, чек-лист, кнопки менеджеров.
+ * Сообщения после подтверждения оплаты (Орлятник): фото, текст, кнопки менеджеров.
  */
 
 import { InlineKeyboard, type Api } from 'grammy';
@@ -79,15 +79,8 @@ export async function sendPostRegistrationFlow(
   const messageText =
     (kb.CONFIRMED_MESSAGE_TEXT as string | undefined)?.trim() ||
     'Поздравляем! Регистрация на 1 смену прошла успешно! 🥂🥳 Твой задаток в размере 8 000 руб. зафиксирован. Ты официальный участник самого безумного «Шапито» этого лета!\n\n' +
-      'Нас будет много — от 50 до 120 самых заряженных людей на одной волне. Общий чат участников мы создадим чуть позже, ссылка прилетит сюда.\n\n' +
-      'А пока держи чек-лист вещей, которые необходимо взять с собой, включая элементы для наших фирменных образов! Сохраняй картинку ниже 👇';
+      'Нас будет много — от 50 до 120 самых заряженных людей на одной волне. Общий чат участников мы создадим чуть позже, ссылка прилетит сюда.';
   await api.sendMessage(chatId, messageText);
-
-  const packing = (kb.PACKING_LIST_PHOTO as string | undefined)?.trim();
-  if (packing) {
-    const ok = await sendPhotoUrl(api, chatId, packing);
-    if (!ok) logger.warn('PACKING_LIST_PHOTO failed', { chatId });
-  }
 
   const contactsKb = buildPostRegistrationKeyboard(kb);
   const bookLabel = ((kb.SECOND_BOOKING_FINAL_BTN as string | undefined) ?? 'Ещё одна путёвка').slice(0, 60);

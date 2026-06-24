@@ -34,7 +34,6 @@ export interface RuntimeKb {
   PROGRAM_COVER_PHOTO?: string;
   CONFIRMED_CELEBRATION_PHOTO?: string;
   CONFIRMED_MESSAGE_TEXT?: string;
-  PACKING_LIST_PHOTO?: string;
   LOOKS_REFERENCES_URL?: string;
   /** URL фото для кнопки «Узнать программу» (лист «Настройки»). */
   PROGRAM_PHOTO_1?: string;
@@ -214,7 +213,6 @@ export const EDITABLE_KEYS: { key: string; label: string }[] = [
   { key: 'REVIEWS_POST_URL', label: 'Ссылка на пост с отзывами' },
   { key: 'CONFIRMED_CELEBRATION_PHOTO', label: 'URL: поздравление после оплаты' },
   { key: 'CONFIRMED_MESSAGE_TEXT', label: 'Текст после подтверждения оплаты' },
-  { key: 'PACKING_LIST_PHOTO', label: 'URL: чек-лист вещей' },
   { key: 'LOOKS_REFERENCES_URL', label: 'Ссылка: идеи образов' },
   { key: 'MANAGER_ELVIRA_URL', label: 'Ссылка: Эльвира (личка)' },
   { key: 'MANAGER_KRISTINA_URL', label: 'Ссылка: Кристина (личка)' },
