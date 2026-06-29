@@ -26,7 +26,7 @@ import { sendPostRegistrationFlow } from './post-registration.js';
 let bot: ReturnType<typeof createBot>;
 
 const REMINDER_INACTIVE_MS = 2 * 24 * 60 * 60 * 1000; // 2 days without activity
-const REMINDER_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000; // don't remind same user more than once per 7 days
+const REMINDER_COOLDOWN_MS = 2 * 24 * 60 * 60 * 1000; // don't remind same user more than once per 2 days
 
 const REMINDER_BY_STATUS: Record<string, string> = {
   NEW: 'Привет! Ты спрашивал про Орлятник — хочешь продолжить? Напиши «хочу забронировать» или задай вопрос.',
